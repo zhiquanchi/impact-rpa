@@ -29,6 +29,7 @@ logger.add(
 # 配置文件路径
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), 'config')
 TEMPLATE_FILE = os.path.join(CONFIG_DIR, 'template.txt')
+TEMPLATES_FILE = os.path.join(CONFIG_DIR, 'templates.json')
 SETTINGS_FILE = os.path.join(CONFIG_DIR, 'settings.json')
 
 browser = Chromium()
@@ -36,24 +37,75 @@ tab = browser.latest_tab
 
 
 def load_template():
-    """加载留言模板"""
+    """加载当前激活的留言模板"""
     try:
-        if os.path.exists(TEMPLATE_FILE):
-            with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
-                return f.read().strip()
+        templates_data = load_all_templates()
+        active_id = templates_data.get('active_template_id', 1)
+        for tpl in templates_data.get('templates', []):
+            if tpl.get('id') == active_id:
+                return tpl.get('content', '')
+        # 如果没找到激活的模板，返回第一个
+        if templates_data.get('templates'):
+            return templates_data['templates'][0].get('content', '')
     except Exception as e:
         logger.error(f"加载模板失败: {e}")
     return ""
 
 
-def save_template(content):
-    """保存留言模板"""
+def load_all_templates():
+    """加载所有模板数据"""
+    default_data = {"templates": [], "active_template_id": None}
+    try:
+        if os.path.exists(TEMPLATES_FILE):
+            with open(TEMPLATES_FILE, 'r', encoding='utf-8') as f:
+                return {**default_data, **json.load(f)}
+        # 兼容旧的单模板文件
+        elif os.path.exists(TEMPLATE_FILE):
+            with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return {
+                        "templates": [{"id": 1, "name": "默认模板", "content": content}],
+                        "active_template_id": 1
+                    }
+    except Exception as e:
+        logger.error(f"加载模板数据失败: {e}")
+    return default_data
+
+
+def save_all_templates(data):
+    """保存所有模板数据"""
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(TEMPLATE_FILE, 'w', encoding='utf-8') as f:
-            f.write(content)
-        logger.info("模板保存成功")
+        with open(TEMPLATES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        logger.info("模板数据保存成功")
         return True
+    except Exception as e:
+        logger.error(f"保存模板数据失败: {e}")
+        return False
+
+
+def get_next_template_id(templates_data):
+    """获取下一个可用的模板ID"""
+    if not templates_data.get('templates'):
+        return 1
+    max_id = max(tpl.get('id', 0) for tpl in templates_data['templates'])
+    return max_id + 1
+
+
+def save_template(content):
+    """保存留言模板（兼容旧接口，添加为新模板）"""
+    try:
+        templates_data = load_all_templates()
+        new_id = get_next_template_id(templates_data)
+        templates_data['templates'].append({
+            "id": new_id,
+            "name": f"模板 {new_id}",
+            "content": content
+        })
+        templates_data['active_template_id'] = new_id
+        return save_all_templates(templates_data)
     except Exception as e:
         logger.error(f"保存模板失败: {e}")
         return False
@@ -116,66 +168,341 @@ def show_menu():
 
 
 def preview_template():
-    """预览留言模板"""
-    template = load_template()
+    """预览当前激活的留言模板"""
+    templates_data = load_all_templates()
+    active_id = templates_data.get('active_template_id')
     
-    if template:
+    active_tpl = None
+    for tpl in templates_data.get('templates', []):
+        if tpl.get('id') == active_id:
+            active_tpl = tpl
+            break
+    
+    if active_tpl and active_tpl.get('content'):
+        name = active_tpl.get('name', '未命名')
         console.print(Panel(
-            Syntax(template, "text", theme="monokai", word_wrap=True),
-            title="[bold green]当前留言模板[/bold green]",
+            active_tpl['content'],
+            title=f"[bold green]当前模板: {name}[/bold green]",
             border_style="green"
         ))
     else:
-        console.print("[yellow]模板为空[/yellow]")
+        console.print("[yellow]没有激活的模板[/yellow]")
     
     questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
 
 
 def edit_template():
-    """编辑留言模板"""
-    choices = [
-        questionary.Choice("👁️  查看当前模板", value="1"),
-        questionary.Choice("📝 替换整个模板", value="2"),
-        questionary.Choice("🔙 返回主菜单", value="3"),
-    ]
+    """编辑留言模板（多模板管理）"""
+    while True:
+        choices = [
+            questionary.Choice("📋 查看所有模板", value="list"),
+            questionary.Choice("👁️  预览当前模板", value="preview"),
+            questionary.Choice("✅ 选择激活模板", value="select"),
+            questionary.Choice("➕ 添加新模板", value="add"),
+            questionary.Choice("✏️  编辑模板", value="edit"),
+            questionary.Choice("🗑️  删除模板", value="delete"),
+            questionary.Choice("🔙 返回主菜单", value="back"),
+        ]
+        
+        choice = questionary.select(
+            "模板管理:",
+            choices=choices,
+            style=questionary.Style([
+                ('highlighted', 'fg:yellow bold'),
+                ('pointer', 'fg:yellow bold'),
+            ])
+        ).ask()
+        
+        if choice is None or choice == 'back':
+            break
+        elif choice == 'list':
+            list_all_templates()
+        elif choice == 'preview':
+            preview_template()
+        elif choice == 'select':
+            select_active_template()
+        elif choice == 'add':
+            add_new_template()
+        elif choice == 'edit':
+            edit_existing_template()
+        elif choice == 'delete':
+            delete_template()
+
+
+def list_all_templates():
+    """列出所有模板"""
+    templates_data = load_all_templates()
+    templates = templates_data.get('templates', [])
+    active_id = templates_data.get('active_template_id')
     
-    choice = questionary.select(
-        "编辑留言模板:",
-        choices=choices,
-        style=questionary.Style([
-            ('highlighted', 'fg:yellow bold'),
-            ('pointer', 'fg:yellow bold'),
-        ])
+    if not templates:
+        console.print("[yellow]没有模板[/yellow]")
+        questionary.press_any_key_to_continue("按任意键继续...").ask()
+        return
+    
+    table = Table(title="所有留言模板", border_style="blue")
+    table.add_column("ID", style="cyan", width=5)
+    table.add_column("状态", width=6)
+    table.add_column("名称", style="green", width=20)
+    table.add_column("内容预览", style="dim", width=50)
+    
+    for tpl in templates:
+        tpl_id = tpl.get('id', 0)
+        name = tpl.get('name', '未命名')
+        content = tpl.get('content', '')
+        # 只显示前50个字符作为预览
+        preview = content.replace('\n', ' ')[:50]
+        if len(content) > 50:
+            preview += "..."
+        
+        status = "[green]✓ 激活[/green]" if tpl_id == active_id else ""
+        table.add_row(str(tpl_id), status, name, preview)
+    
+    console.print(table)
+    questionary.press_any_key_to_continue("按任意键继续...").ask()
+
+
+def select_active_template():
+    """选择激活的模板"""
+    templates_data = load_all_templates()
+    templates = templates_data.get('templates', [])
+    active_id = templates_data.get('active_template_id')
+    
+    if not templates:
+        console.print("[yellow]没有模板可选择[/yellow]")
+        return
+    
+    choices = []
+    for tpl in templates:
+        tpl_id = tpl.get('id', 0)
+        name = tpl.get('name', '未命名')
+        mark = " ✓" if tpl_id == active_id else ""
+        choices.append(questionary.Choice(f"{name}{mark}", value=tpl_id))
+    
+    choices.append(questionary.Choice("🔙 取消", value=None))
+    
+    selected = questionary.select(
+        "选择要激活的模板:",
+        choices=choices
     ).ask()
     
-    if choice == '1':
-        preview_template()
-    elif choice == '2':
-        console.print("[cyan]请输入新的模板内容（输入 'END' 单独一行结束）:[/cyan]")
-        lines = []
-        while True:
+    if selected is not None:
+        templates_data['active_template_id'] = selected
+        if save_all_templates(templates_data):
+            # 找到模板名称
+            name = next((t.get('name', '未命名') for t in templates if t.get('id') == selected), '未命名')
+            console.print(f"[bold green]✓ 已激活模板: {name}[/bold green]")
+
+
+def add_new_template():
+    """添加新模板"""
+    # 输入模板名称
+    name = questionary.text(
+        "请输入模板名称 (可选，直接回车跳过):",
+        default=""
+    ).ask()
+    
+    if name is None:  # 用户按 Ctrl+C
+        return
+    
+    console.print("[cyan]请粘贴模板内容（支持多行，输入单独一行 'END' 结束）:[/cyan]")
+    console.print("[dim]提示: 直接粘贴内容，换行会被保留[/dim]")
+    
+    lines = []
+    while True:
+        try:
             line = input()
             if line.strip() == 'END':
                 break
             lines.append(line)
-        new_template = '\n'.join(lines)
+        except EOFError:
+            break
+    
+    content = '\n'.join(lines)
+    
+    if not content.strip():
+        console.print("[yellow]模板内容为空，未保存[/yellow]")
+        return
+    
+    # 预览
+    console.print(Panel(
+        content,
+        title="[bold yellow]新模板预览[/bold yellow]",
+        border_style="yellow"
+    ))
+    
+    if not questionary.confirm("确认保存?", default=True).ask():
+        console.print("[yellow]已取消[/yellow]")
+        return
+    
+    # 保存
+    templates_data = load_all_templates()
+    new_id = get_next_template_id(templates_data)
+    
+    if not name:
+        name = f"模板 {new_id}"
+    
+    templates_data['templates'].append({
+        "id": new_id,
+        "name": name,
+        "content": content
+    })
+    
+    # 询问是否激活
+    if questionary.confirm("是否将此模板设为当前激活模板?", default=True).ask():
+        templates_data['active_template_id'] = new_id
+    
+    if save_all_templates(templates_data):
+        console.print(f"[bold green]✓ 模板 '{name}' 已保存[/bold green]")
+    else:
+        console.print("[bold red]✗ 保存失败[/bold red]")
+
+
+def edit_existing_template():
+    """编辑现有模板"""
+    templates_data = load_all_templates()
+    templates = templates_data.get('templates', [])
+    
+    if not templates:
+        console.print("[yellow]没有模板可编辑[/yellow]")
+        return
+    
+    # 选择要编辑的模板
+    choices = []
+    for tpl in templates:
+        tpl_id = tpl.get('id', 0)
+        name = tpl.get('name', '未命名')
+        choices.append(questionary.Choice(f"{name} (ID: {tpl_id})", value=tpl_id))
+    
+    choices.append(questionary.Choice("🔙 取消", value=None))
+    
+    selected_id = questionary.select(
+        "选择要编辑的模板:",
+        choices=choices
+    ).ask()
+    
+    if selected_id is None:
+        return
+    
+    # 找到模板
+    tpl_index = None
+    tpl = None
+    for i, t in enumerate(templates):
+        if t.get('id') == selected_id:
+            tpl_index = i
+            tpl = t
+            break
+    
+    if tpl is None:
+        console.print("[red]模板不存在[/red]")
+        return
+    
+    # 选择编辑内容
+    edit_choices = [
+        questionary.Choice("📝 编辑名称", value="name"),
+        questionary.Choice("📄 编辑内容", value="content"),
+        questionary.Choice("🔙 取消", value=None),
+    ]
+    
+    edit_choice = questionary.select(
+        "选择要编辑的内容:",
+        choices=edit_choices
+    ).ask()
+    
+    if edit_choice is None:
+        return
+    elif edit_choice == "name":
+        new_name = questionary.text(
+            "请输入新的模板名称:",
+            default=tpl.get('name', '')
+        ).ask()
         
-        if new_template:
+        if new_name:
+            templates_data['templates'][tpl_index]['name'] = new_name
+            if save_all_templates(templates_data):
+                console.print(f"[bold green]✓ 模板名称已更新为: {new_name}[/bold green]")
+    
+    elif edit_choice == "content":
+        console.print("[bold]当前内容:[/bold]")
+        console.print(Panel(tpl.get('content', ''), border_style="dim"))
+        
+        console.print("\n[cyan]请输入新的模板内容（输入单独一行 'END' 结束）:[/cyan]")
+        
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip() == 'END':
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+        
+        new_content = '\n'.join(lines)
+        
+        if new_content.strip():
             console.print(Panel(
-                new_template,
-                title="[bold yellow]新模板预览[/bold yellow]",
+                new_content,
+                title="[bold yellow]新内容预览[/bold yellow]",
                 border_style="yellow"
             ))
             
-            if questionary.confirm("确认保存?", default=False).ask():
-                if save_template(new_template):
-                    console.print("[bold green]✓ 模板已保存[/bold green]")
-                else:
-                    console.print("[bold red]✗ 保存失败[/bold red]")
-            else:
-                console.print("[yellow]已取消[/yellow]")
+            if questionary.confirm("确认保存?", default=True).ask():
+                templates_data['templates'][tpl_index]['content'] = new_content
+                if save_all_templates(templates_data):
+                    console.print("[bold green]✓ 模板内容已更新[/bold green]")
         else:
-            console.print("[yellow]模板内容为空，未保存[/yellow]")
+            console.print("[yellow]内容为空，未更新[/yellow]")
+
+
+def delete_template():
+    """删除模板"""
+    templates_data = load_all_templates()
+    templates = templates_data.get('templates', [])
+    active_id = templates_data.get('active_template_id')
+    
+    if not templates:
+        console.print("[yellow]没有模板可删除[/yellow]")
+        return
+    
+    if len(templates) == 1:
+        console.print("[yellow]至少需要保留一个模板[/yellow]")
+        return
+    
+    # 选择要删除的模板
+    choices = []
+    for tpl in templates:
+        tpl_id = tpl.get('id', 0)
+        name = tpl.get('name', '未命名')
+        mark = " [激活]" if tpl_id == active_id else ""
+        choices.append(questionary.Choice(f"{name}{mark} (ID: {tpl_id})", value=tpl_id))
+    
+    choices.append(questionary.Choice("🔙 取消", value=None))
+    
+    selected_id = questionary.select(
+        "选择要删除的模板:",
+        choices=choices
+    ).ask()
+    
+    if selected_id is None:
+        return
+    
+    # 确认删除
+    tpl_name = next((t.get('name', '未命名') for t in templates if t.get('id') == selected_id), '未命名')
+    
+    if not questionary.confirm(f"确认删除模板 '{tpl_name}'?", default=False).ask():
+        console.print("[yellow]已取消[/yellow]")
+        return
+    
+    # 删除
+    templates_data['templates'] = [t for t in templates if t.get('id') != selected_id]
+    
+    # 如果删除的是激活的模板，切换到第一个
+    if selected_id == active_id and templates_data['templates']:
+        templates_data['active_template_id'] = templates_data['templates'][0].get('id')
+    
+    if save_all_templates(templates_data):
+        console.print(f"[bold green]✓ 模板 '{tpl_name}' 已删除[/bold green]")
 
 
 def set_proposal_count():
