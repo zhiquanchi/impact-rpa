@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.syntax import Syntax
 from rich import print as rprint
+import pyperclip
 
 console = Console()
 
@@ -92,6 +93,54 @@ def get_next_template_id(templates_data):
         return 1
     max_id = max(tpl.get('id', 0) for tpl in templates_data['templates'])
     return max_id + 1
+
+
+def get_multiline_input():
+    """获取多行输入（支持从剪贴板读取）"""
+    choices = [
+        questionary.Choice("📋 从剪贴板粘贴", value="clipboard"),
+        questionary.Choice("⌨️  手动输入（输入 END 结束）", value="manual"),
+        questionary.Choice("🔙 取消", value="cancel"),
+    ]
+    
+    method = questionary.select(
+        "选择输入方式:",
+        choices=choices
+    ).ask()
+    
+    if method is None or method == "cancel":
+        return None
+    
+    if method == "clipboard":
+        try:
+            content = pyperclip.paste()
+            if content and content.strip():
+                console.print("\n[bold green]已从剪贴板读取内容：[/bold green]")
+                console.print(Panel(content, border_style="green"))
+                
+                if questionary.confirm("确认使用此内容?", default=True).ask():
+                    return content
+                else:
+                    return None
+            else:
+                console.print("[yellow]剪贴板为空[/yellow]")
+                return None
+        except Exception as e:
+            console.print(f"[red]读取剪贴板失败: {e}[/red]")
+            return None
+    
+    else:  # manual
+        console.print("[cyan]请输入内容（输入单独一行 'END' 结束）:[/cyan]")
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip() == 'END':
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+        return '\n'.join(lines) if lines else None
 
 
 def save_template(content):
@@ -305,22 +354,10 @@ def add_new_template():
     if name is None:  # 用户按 Ctrl+C
         return
     
-    console.print("[cyan]请粘贴模板内容（支持多行，输入单独一行 'END' 结束）:[/cyan]")
-    console.print("[dim]提示: 直接粘贴内容，换行会被保留[/dim]")
+    console.print("\n[bold]请选择模板内容的输入方式:[/bold]")
+    content = get_multiline_input()
     
-    lines = []
-    while True:
-        try:
-            line = input()
-            if line.strip() == 'END':
-                break
-            lines.append(line)
-        except EOFError:
-            break
-    
-    content = '\n'.join(lines)
-    
-    if not content.strip():
+    if not content or not content.strip():
         console.print("[yellow]模板内容为空，未保存[/yellow]")
         return
     
@@ -426,21 +463,10 @@ def edit_existing_template():
         console.print("[bold]当前内容:[/bold]")
         console.print(Panel(tpl.get('content', ''), border_style="dim"))
         
-        console.print("\n[cyan]请输入新的模板内容（输入单独一行 'END' 结束）:[/cyan]")
+        console.print("\n[bold]请选择新内容的输入方式:[/bold]")
+        new_content = get_multiline_input()
         
-        lines = []
-        while True:
-            try:
-                line = input()
-                if line.strip() == 'END':
-                    break
-                lines.append(line)
-            except EOFError:
-                break
-        
-        new_content = '\n'.join(lines)
-        
-        if new_content.strip():
+        if new_content and new_content.strip():
             console.print(Panel(
                 new_content,
                 title="[bold yellow]新内容预览[/bold yellow]",
