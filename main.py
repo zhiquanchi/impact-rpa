@@ -761,7 +761,7 @@ def get_selected_tab_value(btn):
 
 def select_public_commission(selected_tab=None):
     """
-    在弹窗的 iframe 中选择 Public Commission 选项，输入 tag，然后选择日期，最后填写留言
+    在弹窗的 iframe 中选择 Template Term，输入 tag，然后选择日期，最后填写留言
     """
     try:
         time.sleep(1)  # 等待弹窗完全加载
@@ -772,55 +772,83 @@ def select_public_commission(selected_tab=None):
             print("  -> 未找到弹窗 iframe")
             return False
         
-        # 在 iframe 中查找并点击 Public Commission
-        option = iframe.ele('text:Public Commission', timeout=5)
-        if option:
-            option.click(by_js=True)
-            print("  -> 已选择 Public Commission")
-            time.sleep(0.5)
-            
-            # 如果有 selected_tab 值，在 tag-input 中输入并选择
-            if selected_tab:
-                input_tag_and_select(iframe, selected_tab)
-            
-            # 选择日期（第二天）
-            select_tomorrow_date(iframe)
-            
-            # 填写留言
-            input_comment(iframe)
-            
-            # 点击提交按钮
-            submit_proposal(iframe)
-            return True
+        # 选择 Template Term 下拉框中的 Public Terms
+        select_template_term(iframe)
         
-        # 备用方案：在 iframe 中用 CSS 选择器查找
-        options = iframe.eles('css:div.text-ellipsis')
-        for opt in options:
-            if 'Public Commission' in opt.text:
-                opt.click(by_js=True)
-                print("  -> 已选择 Public Commission")
-                time.sleep(0.5)
-                
-                # 如果有 selected_tab 值，在 tag-input 中输入并选择
-                if selected_tab:
-                    input_tag_and_select(iframe, selected_tab)
-                
-                # 选择日期（第二天）
-                select_tomorrow_date(iframe)
-                
-                # 填写留言
-                input_comment(iframe)
-                
-                # 点击提交按钮
-                submit_proposal(iframe)
-                return True
-            
-        print("  -> 未找到 Public Commission 选项")
-        return False
+        # 如果有 selected_tab 值，在 tag-input 中输入并选择
+        if selected_tab:
+            input_tag_and_select(iframe, selected_tab)
+        
+        # 选择日期（第二天）
+        select_tomorrow_date(iframe)
+        
+        # 填写留言
+        input_comment(iframe)
+        
+        # 点击提交按钮
+        submit_proposal(iframe)
+        return True
             
     except Exception as e:
-        print(f"  -> 选择 Public Commission 失败: {e}")
+        print(f"  -> 处理弹窗失败: {e}")
     return False
+
+
+def select_template_term(iframe):
+    """
+    在 Template Term 下拉框中选择 Public Terms
+    """
+    try:
+        # 查找 Template Term 下拉框并点击打开
+        # 尝试通过 label 或 placeholder 查找下拉框
+        term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
+        
+        if term_dropdown:
+            # 如果是 select 元素，直接选择选项
+            term_dropdown.select('Public Terms')
+            print("  -> 已选择 Template Term: Public Terms")
+            time.sleep(0.3)
+            return True
+        
+        # 如果不是标准 select，可能是自定义下拉框
+        # 查找包含 "Template Term" 的区域
+        term_section = iframe.ele('text:Template Term', timeout=2)
+        if term_section:
+            # 找到旁边的下拉按钮
+            parent = term_section.parent()
+            for _ in range(5):
+                if parent:
+                    dropdown_btn = parent.ele('css:button, [class*="select"], [class*="dropdown"]', timeout=0.5)
+                    if dropdown_btn:
+                        dropdown_btn.click(by_js=True)
+                        time.sleep(0.3)
+                        break
+                    parent = parent.parent()
+        
+        # 查找并点击 "Public Terms" 选项
+        time.sleep(0.3)
+        public_terms = iframe.ele('text:Public Terms', timeout=2)
+        if public_terms:
+            public_terms.click(by_js=True)
+            print("  -> 已选择 Template Term: Public Terms")
+            time.sleep(0.3)
+            return True
+        
+        # 备用方案：通过 CSS 选择器查找
+        term_options = iframe.eles('css:div.text-ellipsis')
+        for opt in term_options:
+            if 'Public Terms' in opt.text and 'Public Terms' == opt.text.strip():
+                opt.click(by_js=True)
+                print("  -> 已选择 Template Term: Public Terms")
+                time.sleep(0.3)
+                return True
+        
+        print("  -> 未找到 Template Term 下拉框或 Public Terms 选项")
+        return False
+        
+    except Exception as e:
+        print(f"  -> 选择 Template Term 失败: {e}")
+        return False
 
 
 def input_tag_and_select(iframe, selected_tab):
