@@ -250,12 +250,7 @@ def start_send_proposals():
             return
     else:
         console.print("\n[bold]当前留言模板预览:[/bold]")
-        # 只显示前3行
-        lines = template.split('\n')[:3]
-        preview_text = '\n'.join(lines)
-        if len(template.split('\n')) > 3:
-            preview_text += "\n..."
-        console.print(Panel(preview_text, border_style="dim"))
+        console.print(Panel(template, border_style="dim"))
     
     if not questionary.confirm(
         f"确认开始发送 {max_count} 个 Proposal?",
