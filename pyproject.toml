@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "drissionpage>=4.1.1.2",
     "loguru>=0.7.3",
+    "pyinstaller>=6.17.0",
     "pyperclip>=1.11.0",
     "pyside6>=6.10.1",
     "questionary>=2.1.1",
