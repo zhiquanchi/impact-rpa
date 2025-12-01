@@ -12,8 +12,24 @@ from rich.table import Table
 from rich.syntax import Syntax
 from rich import print as rprint
 import pyperclip
+import urllib.request
+import urllib.error
+import shutil
+import ssl
+
+# 创建不验证SSL的上下文（用于某些环境下HTTPS请求）
+try:
+    ssl_context = ssl.create_default_context()
+except:
+    ssl_context = ssl._create_unverified_context()
 
 console = Console()
+
+# 版本信息
+VERSION = "1.0.0"
+GITHUB_REPO = "zhiquanchi/impact-rpa"
+GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/master"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}"
 
 # 配置日志
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
@@ -35,6 +51,171 @@ SETTINGS_FILE = os.path.join(CONFIG_DIR, 'settings.json')
 
 browser = Chromium()
 tab = browser.latest_tab
+
+
+def get_remote_version():
+    """从 GitHub 获取远程版本号"""
+    try:
+        version_url = f"{GITHUB_RAW_URL}/version.txt"
+        req = urllib.request.Request(version_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+            remote_version = response.read().decode('utf-8').strip()
+            return remote_version
+    except Exception as e:
+        logger.debug(f"获取远程版本失败: {e}")
+        return None
+
+
+def compare_versions(local, remote):
+    """比较版本号，返回 True 如果远程版本更新"""
+    try:
+        local_parts = [int(x) for x in local.split('.')]
+        remote_parts = [int(x) for x in remote.split('.')]
+        
+        # 补齐版本号长度
+        while len(local_parts) < len(remote_parts):
+            local_parts.append(0)
+        while len(remote_parts) < len(local_parts):
+            remote_parts.append(0)
+        
+        for l, r in zip(local_parts, remote_parts):
+            if r > l:
+                return True
+            elif r < l:
+                return False
+        return False
+    except:
+        return False
+
+
+def download_file(url, save_path):
+    """下载文件"""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=30, context=ssl_context) as response:
+            with open(save_path, 'wb') as f:
+                f.write(response.read())
+        return True
+    except Exception as e:
+        logger.error(f"下载文件失败: {e}")
+        return False
+
+
+def get_file_list_from_github():
+    """从 GitHub API 获取文件列表"""
+    try:
+        api_url = f"{GITHUB_API_URL}/contents"
+        req = urllib.request.Request(api_url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/vnd.github.v3+json'
+        })
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data
+    except Exception as e:
+        logger.error(f"获取文件列表失败: {e}")
+        return None
+
+
+def check_for_updates(silent=False):
+    """检查更新"""
+    if not silent:
+        console.print("[cyan]正在检查更新...[/cyan]")
+    
+    remote_version = get_remote_version()
+    
+    if remote_version is None:
+        if not silent:
+            console.print("[yellow]无法连接到更新服务器[/yellow]")
+        return False, None
+    
+    if compare_versions(VERSION, remote_version):
+        if not silent:
+            console.print(f"[green]发现新版本: {remote_version} (当前: {VERSION})[/green]")
+        return True, remote_version
+    else:
+        if not silent:
+            console.print(f"[green]当前已是最新版本 ({VERSION})[/green]")
+        return False, remote_version
+
+
+def perform_update():
+    """执行更新"""
+    console.print("\n[bold cyan]开始更新...[/bold cyan]")
+    
+    # 获取当前脚本目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 需要更新的文件列表
+    files_to_update = ['main.py', 'version.txt']
+    
+    # 备份当前文件
+    backup_dir = os.path.join(script_dir, 'backup')
+    os.makedirs(backup_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    success_count = 0
+    total_count = len(files_to_update)
+    
+    with console.status("[bold green]正在下载更新...") as status:
+        for filename in files_to_update:
+            try:
+                file_path = os.path.join(script_dir, filename)
+                
+                # 备份现有文件
+                if os.path.exists(file_path):
+                    backup_path = os.path.join(backup_dir, f"{filename}.{timestamp}.bak")
+                    shutil.copy2(file_path, backup_path)
+                    logger.info(f"已备份: {filename} -> {backup_path}")
+                
+                # 下载新文件
+                download_url = f"{GITHUB_RAW_URL}/{filename}"
+                status.update(f"[bold green]正在下载: {filename}...")
+                
+                if download_file(download_url, file_path):
+                    console.print(f"  [green]✓[/green] 已更新: {filename}")
+                    success_count += 1
+                else:
+                    console.print(f"  [red]✗[/red] 更新失败: {filename}")
+                    
+            except Exception as e:
+                console.print(f"  [red]✗[/red] 更新 {filename} 时出错: {e}")
+                logger.error(f"更新 {filename} 失败: {e}")
+    
+    if success_count == total_count:
+        console.print(f"\n[bold green]✓ 更新完成！({success_count}/{total_count})[/bold green]")
+        console.print("[yellow]请重新启动程序以应用更新[/yellow]")
+        return True
+    elif success_count > 0:
+        console.print(f"\n[yellow]部分更新完成 ({success_count}/{total_count})[/yellow]")
+        console.print("[yellow]请重新启动程序[/yellow]")
+        return True
+    else:
+        console.print("\n[red]更新失败[/red]")
+        return False
+
+
+def update_menu():
+    """更新菜单"""
+    has_update, remote_version = check_for_updates()
+    
+    if has_update:
+        console.print(Panel(
+            f"[bold yellow]发现新版本！[/bold yellow]\n\n"
+            f"当前版本: [red]{VERSION}[/red]\n"
+            f"最新版本: [green]{remote_version}[/green]",
+            title="[cyan]更新提示[/cyan]",
+            border_style="yellow"
+        ))
+        
+        if questionary.confirm("是否立即更新?", default=True).ask():
+            if perform_update():
+                if questionary.confirm("更新完成，是否立即退出程序?", default=True).ask():
+                    console.print("\n[bold cyan]请重新运行程序以使用新版本[/bold cyan]")
+                    exit(0)
+    
+    questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
 
 
 def load_template():
@@ -193,7 +374,7 @@ def save_settings(settings):
 def show_menu():
     """显示主菜单并返回用户选择"""
     console.print(Panel.fit(
-        "[bold cyan]Impact RPA - Send Proposal 自动化工具[/bold cyan]",
+        f"[bold cyan]Impact RPA - Send Proposal 自动化工具[/bold cyan]\n[dim]版本: {VERSION}[/dim]",
         border_style="cyan"
     ))
     
@@ -203,6 +384,7 @@ def show_menu():
         questionary.Choice("✏️  编辑留言模板", value="3"),
         questionary.Choice("🔢 设置发送数量", value="4"),
         questionary.Choice("⚙️  查看当前设置", value="5"),
+        questionary.Choice("🔄 检查更新", value="6"),
         questionary.Choice("🚪 退出程序", value="0"),
     ]
     
@@ -567,6 +749,11 @@ def view_settings():
 
 def main_menu():
     """主菜单循环"""
+    # 启动时静默检查更新
+    has_update, remote_version = check_for_updates(silent=True)
+    if has_update:
+        console.print(f"\n[bold yellow]💡 发现新版本 {remote_version}，请选择「检查更新」进行更新[/bold yellow]\n")
+    
     while True:
         choice = show_menu()
         
@@ -583,6 +770,8 @@ def main_menu():
             set_proposal_count()
         elif choice == '5':
             view_settings()
+        elif choice == '6':
+            update_menu()
         elif choice == '0':
             console.print("\n[bold cyan]感谢使用，再见！👋[/bold cyan]")
             break
