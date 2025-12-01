@@ -1,4 +1,5 @@
 from DrissionPage import Chromium
+from DrissionPage.errors import ElementNotFoundError, PageDisconnectedError, ContextLostError
 import time
 import os
 import json
@@ -33,8 +34,119 @@ TEMPLATE_FILE = os.path.join(CONFIG_DIR, 'template.txt')
 TEMPLATES_FILE = os.path.join(CONFIG_DIR, 'templates.json')
 SETTINGS_FILE = os.path.join(CONFIG_DIR, 'settings.json')
 
-browser = Chromium()
-tab = browser.latest_tab
+# 全局浏览器和标签页变量
+browser = None
+tab = None
+
+
+def init_browser():
+    """初始化或重新连接浏览器"""
+    global browser, tab
+    try:
+        browser = Chromium()
+        tab = browser.latest_tab
+        logger.info("浏览器连接成功")
+        return True
+    except Exception as e:
+        logger.error(f"浏览器连接失败: {e}")
+        return False
+
+
+def reconnect_browser(url=None):
+    """重新连接浏览器并恢复页面"""
+    global browser, tab
+    console.print("[yellow]检测到页面断开，正在重新连接...[/yellow]")
+    logger.warning("页面断开，尝试重新连接浏览器")
+    
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            browser = Chromium()
+            tab = browser.latest_tab
+            
+            # 如果提供了 URL，导航到该页面
+            if url:
+                tab.get(url)
+                tab.wait.doc_loaded()
+                time.sleep(1)
+            
+            console.print("[green]✓ 浏览器重新连接成功[/green]")
+            logger.info("浏览器重新连接成功")
+            return True
+        except Exception as e:
+            logger.error(f"重连尝试 {i+1}/{max_retries} 失败: {e}")
+            time.sleep(1)
+    
+    console.print("[red]✗ 浏览器重新连接失败[/red]")
+    return False
+
+
+def safe_find_element(locator, timeout=3, parent=None):
+    """安全地查找元素，如果失败则尝试重连"""
+    global tab
+    target = parent if parent else tab
+    
+    try:
+        element = target.ele(locator, timeout=timeout)
+        return element
+    except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
+        logger.warning(f"查找元素失败: {e}")
+        return None
+    except Exception as e:
+        # 检查是否是连接断开相关的错误
+        error_msg = str(e).lower()
+        if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+            logger.warning(f"页面可能已断开: {e}")
+            return None
+        raise
+
+
+def safe_find_elements(locator, timeout=3, parent=None):
+    """安全地查找多个元素"""
+    global tab
+    target = parent if parent else tab
+    
+    try:
+        elements = target.eles(locator, timeout=timeout)
+        return elements if elements else []
+    except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
+        logger.warning(f"查找元素失败: {e}")
+        return []
+    except Exception as e:
+        error_msg = str(e).lower()
+        if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+            logger.warning(f"页面可能已断开: {e}")
+            return []
+        raise
+
+
+def safe_click(element, by_js=False):
+    """安全地点击元素"""
+    try:
+        if by_js:
+            element.click(by_js=True)
+        else:
+            element.click()
+        return True
+    except Exception as e:
+        logger.warning(f"点击元素失败: {e}")
+        return False
+
+
+def wait_for_page_ready(timeout=10):
+    """等待页面就绪"""
+    global tab
+    try:
+        tab.wait.doc_loaded(timeout=timeout)
+        time.sleep(0.5)
+        return True
+    except Exception as e:
+        logger.warning(f"等待页面就绪失败: {e}")
+        return False
+
+
+# 初始化浏览器连接
+init_browser()
 
 
 def load_template():
@@ -590,6 +702,14 @@ def main_menu():
 
 def start_send_proposals():
     """开始发送 Send Proposal"""
+    global tab
+    
+    # 确保浏览器已连接
+    if not tab:
+        if not init_browser():
+            console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+            return
+    
     settings = load_settings()
     max_count = settings['max_proposals']
     
@@ -617,12 +737,20 @@ def start_send_proposals():
 
 
 def main():
+    global tab
+    
+    # 确保浏览器已连接
+    if not tab:
+        if not init_browser():
+            console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+            return
+    
     url = 'https://app.impact.com/secure/mediapartner/marketplace/new-campaign-marketplace-flow.ihtml?execution=e1s1#sortBy=salepercent&sortOrder=DESC'
     tab.get(url)
     # 等待页面加载
     tab.wait.doc_loaded()
     # 查找人机验证元素
-    人机验证 = tab.ele('text=请完成以下操作，验证您是真人。')
+    人机验证 = safe_find_element('text=请完成以下操作，验证您是真人。')
     if 人机验证:
         logger.info("检测到人机验证，正在尝试点击...")
         # 人机验证.click()
@@ -639,6 +767,8 @@ def extract_send_proposal_buttons(max_count=10):
     Args:
         max_count: 最大发送数量
     """
+    global tab
+    
     url = 'https://app.impact.com/secure/advertiser/discover/radius/fr/partner_discover.ihtml?page=marketplace&slideout_id_type=partner#businessModels=all&sizeRating=large%2Cextra_large&sortBy=reachRating&sortOrder=DESC'
     tab.get(url)
     tab.wait.doc_loaded()
@@ -659,72 +789,129 @@ def extract_send_proposal_buttons(max_count=10):
     clicked_count = 0
     total_scrolls = 0
     max_scrolls = 100  # 最大滚动次数，防止无限循环
+    consecutive_errors = 0  # 连续错误计数
+    max_consecutive_errors = 3  # 最大连续错误次数
     
     console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个)...[/bold cyan]")
     
     while total_scrolls < max_scrolls:
-        # 查找当前可见的所有 Send Proposal 按钮
-        buttons = tab.eles('css:button[data-testid="uicl-button"]')
-        send_proposal_buttons = [btn for btn in buttons if 'Send Proposal' in btn.text]
+        # 检查是否需要重连
+        if consecutive_errors >= max_consecutive_errors:
+            console.print("[yellow]连续多次错误，尝试重新连接浏览器...[/yellow]")
+            if reconnect_browser(url):
+                consecutive_errors = 0
+                time.sleep(2)  # 等待页面加载
+                continue
+            else:
+                console.print("[red]重连失败，停止执行[/red]")
+                break
         
-        if not send_proposal_buttons:
-            logger.debug("当前页面没有 Send Proposal 按钮，滚动加载更多...")
-            tab.scroll.down(500)
-            time.sleep(1)
-            total_scrolls += 1
-            continue
-        
-        # 遍历当前可见的按钮并点击
-        for btn in send_proposal_buttons:
+        try:
+            # 查找当前可见的所有 Send Proposal 按钮
+            buttons = safe_find_elements('css:button[data-testid="uicl-button"]')
+            
+            if buttons is None:
+                # 元素查找失败，可能页面已断开
+                consecutive_errors += 1
+                if reconnect_browser(url):
+                    consecutive_errors = 0
+                    time.sleep(2)
+                continue
+            
+            send_proposal_buttons = [btn for btn in buttons if btn and 'Send Proposal' in (btn.text or '')]
+            
+            if not send_proposal_buttons:
+                logger.debug("当前页面没有 Send Proposal 按钮，滚动加载更多...")
+                try:
+                    tab.scroll.down(500)
+                except Exception as e:
+                    logger.warning(f"滚动失败: {e}")
+                    consecutive_errors += 1
+                    continue
+                time.sleep(1)
+                total_scrolls += 1
+                continue
+            
+            # 重置连续错误计数
+            consecutive_errors = 0
+            
+            # 遍历当前可见的按钮并点击
+            for btn in send_proposal_buttons:
+                # 检查是否达到目标数量
+                if clicked_count >= max_count:
+                    logger.info(f"已达到目标数量 {max_count}，停止发送")
+                    console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
+                    console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
+                    return clicked_count
+                
+                try:
+                    # 先获取 selected-tab 的值（在点击按钮之前）
+                    selected_tab = get_selected_tab_value(btn)
+                    
+                    # 向上查找父元素并悬停
+                    parent = btn.parent()
+                    for _ in range(10):
+                        if parent:
+                            try:
+                                tab.scroll.to_see(parent)
+                                time.sleep(0.2)
+                                parent.hover()
+                                time.sleep(0.3)
+                                
+                                # 点击 Send Proposal 按钮
+                                if not safe_click(btn):
+                                    raise Exception("点击按钮失败")
+                                
+                                clicked_count += 1
+                                logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
+                                console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                time.sleep(0.5)
+                                
+                                # 在弹窗中选择 Public Commission，并传入 selected_tab 值
+                                select_public_commission(selected_tab)
+                                break
+                            except Exception as e:
+                                error_msg = str(e).lower()
+                                if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                                    raise  # 重新抛出连接相关的错误
+                                parent = parent.parent()
+                        else:
+                            break
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg or 'no such' in error_msg:
+                        logger.warning(f"页面可能已刷新: {e}")
+                        console.print(f"[yellow]⚠ 页面可能已刷新，尝试重连...[/yellow]")
+                        consecutive_errors += 1
+                        break  # 跳出按钮循环，重新开始
+                    else:
+                        logger.error(f"点击按钮时出错: {e}")
+                        console.print(f"[red]✗ 点击按钮时出错: {e}[/red]")
+                    continue
+            
             # 检查是否达到目标数量
             if clicked_count >= max_count:
-                logger.info(f"已达到目标数量 {max_count}，停止发送")
-                console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
-                console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
-                return clicked_count
+                break
             
+            # 滚动加载更多
             try:
-                # 先获取 selected-tab 的值（在点击按钮之前）
-                selected_tab = get_selected_tab_value(btn)
-                
-                # 向上查找父元素并悬停
-                parent = btn.parent()
-                for _ in range(10):
-                    if parent:
-                        try:
-                            tab.scroll.to_see(parent)
-                            time.sleep(0.2)
-                            parent.hover()
-                            time.sleep(0.3)
-                            
-                            # 点击 Send Proposal 按钮
-                            btn.click()
-                            clicked_count += 1
-                            logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
-                            console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
-                            time.sleep(0.5)
-                            
-                            # 在弹窗中选择 Public Commission，并传入 selected_tab 值
-                            select_public_commission(selected_tab)
-                            break
-                        except Exception:
-                            parent = parent.parent()
-                    else:
-                        break
+                tab.scroll.down(500)
             except Exception as e:
-                logger.error(f"点击按钮时出错: {e}")
-                console.print(f"[red]✗ 点击按钮时出错: {e}[/red]")
+                logger.warning(f"滚动失败: {e}")
+                consecutive_errors += 1
                 continue
-        
-        # 检查是否达到目标数量
-        if clicked_count >= max_count:
-            break
-        
-        # 滚动加载更多
-        tab.scroll.down(500)
-        time.sleep(1)
-        total_scrolls += 1
-        console.print(f"[dim]滚动第 {total_scrolls} 次，已发送 {clicked_count}/{max_count} 个[/dim]")
+            time.sleep(1)
+            total_scrolls += 1
+            console.print(f"[dim]滚动第 {total_scrolls} 次，已发送 {clicked_count}/{max_count} 个[/dim]")
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                logger.warning(f"检测到页面断开: {e}")
+                consecutive_errors += 1
+            else:
+                logger.error(f"循环中出错: {e}")
+                consecutive_errors += 1
     
     logger.info(f"发送完成，共发送 {clicked_count} 个 Send Proposal")
     console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
@@ -735,12 +922,14 @@ def get_selected_tab_value(btn):
     """
     获取按钮所在行的 selected-tab 值
     """
+    global tab
+    
     try:
         # 向上查找包含 selected-tab 的父元素
         parent = btn.parent()
         for _ in range(20):  # 最多向上查找20层
             if parent:
-                selected_tab_ele = parent.ele('css:.selected-tab', timeout=0.1)
+                selected_tab_ele = safe_find_element('css:.selected-tab', timeout=0.1, parent=parent)
                 if selected_tab_ele:
                     value = selected_tab_ele.text.strip()
                     return value
@@ -749,7 +938,7 @@ def get_selected_tab_value(btn):
                 break
         
         # 备用方案：直接在页面查找
-        selected_tab_ele = tab.ele('css:.selected-tab', timeout=0.5)
+        selected_tab_ele = safe_find_element('css:.selected-tab', timeout=0.5)
         if selected_tab_ele:
             value = selected_tab_ele.text.strip()
             return value
@@ -763,11 +952,13 @@ def select_public_commission(selected_tab=None):
     """
     在弹窗的 iframe 中选择 Template Term，输入 tag，然后选择日期，最后填写留言
     """
+    global tab
+    
     try:
         time.sleep(1)  # 等待弹窗完全加载
         
         # 查找 iframe 并切换进去
-        iframe = tab.ele('css:iframe[data-testid="uicl-modal-iframe-content"]', timeout=3)
+        iframe = safe_find_element('css:iframe[data-testid="uicl-modal-iframe-content"]', timeout=3)
         if not iframe:
             print("  -> 未找到弹窗 iframe")
             return False
@@ -790,6 +981,10 @@ def select_public_commission(selected_tab=None):
         return True
             
     except Exception as e:
+        error_msg = str(e).lower()
+        if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+            logger.warning(f"处理弹窗时页面断开: {e}")
+            raise  # 重新抛出以触发重连
         print(f"  -> 处理弹窗失败: {e}")
     return False
 
@@ -1064,30 +1259,32 @@ def click_understand_button(iframe):
     """
     点击 'I understand' 确认按钮
     """
+    global tab
+    
     try:
         time.sleep(0.5)  # 等待弹窗出现
         
         # 在 iframe 中查找 I understand 按钮
-        understand_btn = iframe.ele('text:I understand', timeout=3)
+        understand_btn = safe_find_element('text:I understand', timeout=3, parent=iframe)
         if understand_btn and understand_btn.tag == 'button':
-            understand_btn.click(by_js=True)
+            safe_click(understand_btn, by_js=True)
             print("  -> 已点击 'I understand' 确认按钮")
             time.sleep(0.5)
             return True
         
         # 备用方案：查找所有按钮
-        buttons = iframe.eles('css:button[data-testid="uicl-button"]')
+        buttons = safe_find_elements('css:button[data-testid="uicl-button"]', parent=iframe)
         for btn in buttons:
-            if 'I understand' in btn.text:
-                btn.click(by_js=True)
+            if btn and 'I understand' in (btn.text or ''):
+                safe_click(btn, by_js=True)
                 print("  -> 已点击 'I understand' 确认按钮")
                 time.sleep(0.5)
                 return True
         
         # 备用方案2：在主页面查找（可能弹窗不在 iframe 内）
-        understand_btn = tab.ele('text:I understand', timeout=2)
+        understand_btn = safe_find_element('text:I understand', timeout=2)
         if understand_btn and understand_btn.tag == 'button':
-            understand_btn.click(by_js=True)
+            safe_click(understand_btn, by_js=True)
             print("  -> 已点击 'I understand' 确认按钮")
             time.sleep(0.5)
             return True
@@ -1104,11 +1301,13 @@ def close_modal():
     """
     关闭弹窗
     """
+    global tab
+    
     try:
         # 查找关闭按钮
-        close_btn = tab.ele('css:button[data-testid="uicl-modal-close-button"]', timeout=2)
+        close_btn = safe_find_element('css:button[data-testid="uicl-modal-close-button"]', timeout=2)
         if close_btn:
-            close_btn.click()
+            safe_click(close_btn)
             print("  -> 已关闭弹窗")
             time.sleep(0.3)
             return True
@@ -1121,6 +1320,8 @@ def extract_buttons_with_hover():
     """
     通过悬停列表项来显示 Send Proposal 按钮，然后提取
     """
+    global tab
+    
     url = 'https://app.impact.com/secure/mediapartner/marketplace/new-campaign-marketplace-flow.ihtml?execution=e1s1#sortBy=salepercent&sortOrder=DESC'
     tab.get(url)
     tab.wait.doc_loaded()
@@ -1135,11 +1336,11 @@ def extract_buttons_with_hover():
     
     while no_change_count < max_no_change:
         # 查找页面上的卡片/列表项元素（根据实际页面结构调整选择器）
-        cards = tab.eles('css:.campaign-card, .list-item, [class*="card"], [class*="item"]')
+        cards = safe_find_elements('css:.campaign-card, .list-item, [class*="card"], [class*="item"]')
         
         if not cards:
             # 如果没有找到，尝试其他选择器
-            cards = tab.eles('css:div[class*="row"], tr, li')
+            cards = safe_find_elements('css:div[class*="row"], tr, li')
         
         for card in cards:
             try:
@@ -1148,7 +1349,7 @@ def extract_buttons_with_hover():
                 time.sleep(0.3)  # 等待按钮显示
                 
                 # 在当前卡片中查找 Send Proposal 按钮
-                btn = card.ele('xpath:.//button[contains(text(), "Send Proposal")]', timeout=0.5)
+                btn = safe_find_element('xpath:.//button[contains(text(), "Send Proposal")]', timeout=0.5, parent=card)
                 if btn:
                     btn_html = btn.html
                     if btn_html not in [b['html'] for b in all_buttons]:
@@ -1168,7 +1369,10 @@ def extract_buttons_with_hover():
             last_count = len(all_buttons)
         
         # 滚动页面
-        tab.scroll.down(500)
+        try:
+            tab.scroll.down(500)
+        except Exception:
+            pass
         time.sleep(1)
     
     print(f"\n===== 共找到 {len(all_buttons)} 个 Send Proposal 按钮 =====\n")
