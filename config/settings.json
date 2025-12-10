@@ -1,5 +1,5 @@
 {
-    "max_proposals": 10,
+    "max_proposals": 100,
     "scroll_delay": 1.0,
     "click_delay": 0.5,
     "modal_wait": 1.0
