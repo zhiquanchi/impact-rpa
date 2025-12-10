@@ -337,8 +337,10 @@ class ProposalSender:
         self.console = console
         self.max_scrolls = 100
         self.max_consecutive_errors = 3
+        self.modal_wait_timeout = 8.0
+        self.modal_poll_interval = 0.2
     
-    def send_proposals(self, max_count: int = 10) -> int:
+    def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> int:
         """
         循环点击页面上所有的 Send Proposal 按钮
         
@@ -361,6 +363,9 @@ class ProposalSender:
         questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
         
         logger.info(f"开始发送 Send Proposal，目标数量: {max_count}")
+
+        if template_content is None:
+            template_content = self.template_manager.get_active_template()
         
         clicked_count = 0
         total_scrolls = 0
@@ -433,7 +438,7 @@ class ProposalSender:
                                     self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
                                     time.sleep(0.5)
                                     
-                                    self._handle_proposal_modal(selected_tab)
+                                    self._handle_proposal_modal(selected_tab, template_content)
                                     break
                                 except Exception as e:
                                     error_msg = str(e).lower()
@@ -498,12 +503,10 @@ class ProposalSender:
             print(f"  -> 获取 selected-tab 失败: {e}")
         return None
     
-    def _handle_proposal_modal(self, selected_tab: str = None) -> bool:
+    def _handle_proposal_modal(self, selected_tab: str = None, template_content: str = "") -> bool:
         """处理 Proposal 弹窗"""
         try:
-            time.sleep(1)
-            
-            iframe = self.browser.find_element('css:iframe[data-testid="uicl-modal-iframe-content"]', timeout=3)
+            iframe = self._wait_for_modal_iframe()
             if not iframe:
                 print("  -> 未找到弹窗 iframe")
                 return False
@@ -514,7 +517,7 @@ class ProposalSender:
                 self._input_tag_and_select(iframe, selected_tab)
             
             self._select_tomorrow_date(iframe)
-            self._input_comment(iframe)
+            self._input_comment(iframe, template_content)
             self._submit_proposal(iframe)
             return True
             
@@ -656,10 +659,10 @@ class ProposalSender:
             print(f"  -> 选择日期失败: {e}")
         return False
     
-    def _input_comment(self, iframe) -> bool:
+    def _input_comment(self, iframe, template_content: str = "") -> bool:
         """填写留言"""
         try:
-            template = self.template_manager.get_active_template()
+            template = template_content or self.template_manager.get_active_template()
             if not template:
                 logger.warning("留言模板为空")
                 print("  -> 留言模板为空")
@@ -757,6 +760,20 @@ class ProposalSender:
         except Exception as e:
             print(f"  -> 点击确认按钮失败: {e}")
         return False
+
+    def _wait_for_modal_iframe(self):
+        """等待 Proposal 弹窗 iframe 出现"""
+        deadline = time.time() + self.modal_wait_timeout
+        while time.time() < deadline:
+            iframe = self.browser.find_element(
+                'css:iframe[data-testid="uicl-modal-iframe-content"]',
+                timeout=0.5
+            )
+            if iframe:
+                return iframe
+            time.sleep(self.modal_poll_interval)
+        logger.warning("等待 Proposal 弹窗超时")
+        return None
 
 
 class MenuUI:
@@ -1158,7 +1175,7 @@ class ImpactRPA:
             self.console.print("[yellow]已取消[/yellow]")
             return
         
-        self.proposal_sender.send_proposals(max_count)
+        self.proposal_sender.send_proposals(max_count, template)
 
 
 if __name__ == "__main__":
