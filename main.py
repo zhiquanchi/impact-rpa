@@ -341,6 +341,7 @@ class ProposalSender:
         settings = config.load_settings()
         self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
         self.modal_poll_interval = 0.2
+        self.scroll_delay = float(settings.get("scroll_delay", 1.0))
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
     
@@ -435,7 +436,7 @@ class ProposalSender:
                         if not self.browser.scroll_down(500):
                             consecutive_errors += 1
                             continue
-                        time.sleep(1)
+                        time.sleep(self.scroll_delay)
                         total_scrolls += 1
                         continue
                     else:
@@ -510,7 +511,7 @@ class ProposalSender:
                     if not self.browser.scroll_down(500):
                         consecutive_errors += 1
                         continue
-                    time.sleep(1)
+                    time.sleep(self.scroll_delay)
                     total_scrolls += 1
                     self.console.print(
                         f"[dim]当前批次已发送完，滚动第 {total_scrolls} 次加载更多按钮[/dim]"
@@ -524,7 +525,7 @@ class ProposalSender:
                 if not self.browser.scroll_down(500):
                     consecutive_errors += 1
                     continue
-                time.sleep(1)
+                time.sleep(self.scroll_delay)
                 total_scrolls += 1
                 self.console.print(f"[dim]滚动第 {total_scrolls} 次，已发送 {clicked_count}/{max_count} 个[/dim]")
                 
