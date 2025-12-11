@@ -13,6 +13,7 @@ from rich.table import Table
 from rich.syntax import Syntax
 from rich import print as rprint
 import pyperclip
+from exception_handler import exception_handler
 
 
 class ConfigManager:
@@ -254,11 +255,28 @@ class BrowserManager:
             return element
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "查找元素",
+                    "selector": selector,
+                    "timeout": timeout
+                }
+            )
             return None
         except Exception as e:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
+                exception_handler.log_exception(
+                    e,
+                    context={
+                        "operation": "查找元素",
+                        "selector": selector,
+                        "timeout": timeout,
+                        "error_type": "页面断开"
+                    }
+                )
                 return None
             raise
     
@@ -270,11 +288,28 @@ class BrowserManager:
             return elements if elements else []
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "查找多个元素",
+                    "locator": locator,
+                    "timeout": timeout
+                }
+            )
             return []
         except Exception as e:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
+                exception_handler.log_exception(
+                    e,
+                    context={
+                        "operation": "查找多个元素",
+                        "locator": locator,
+                        "timeout": timeout,
+                        "error_type": "页面断开"
+                    }
+                )
                 return []
             raise
     
@@ -387,8 +422,19 @@ class ProposalSender:
                 if self.browser.reconnect():
                     consecutive_errors = 0
                     time.sleep(1)
-                    continue
                 else:
+                    # 记录重连失败的异常
+                    exception_handler.log_exception(
+                        Exception("浏览器重连失败"),
+                        context={
+                            "consecutive_errors": consecutive_errors,
+                            "total_scrolls": total_scrolls,
+                            "clicked_count": clicked_count
+                        },
+                        send_notification=True
+                    )
+                    continue
+            else:
                     self.console.print("[red]重连失败，停止执行[/red]")
                     break
             
