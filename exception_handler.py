@@ -6,6 +6,8 @@
 import os
 import json
 import traceback
+import inspect
+import platform
 from datetime import datetime
 from typing import Optional, Dict, Any
 from loguru import logger
@@ -41,6 +43,57 @@ class ExceptionHandler:
         """
         # 生成异常ID
         exception_id = f"EXC_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+        # 调用点信息（尽量指向业务调用处，而非异常处理器本身）
+        caller = None
+        try:
+            # stack[0] 是当前帧，stack[1] 通常是调用 log_exception 的位置
+            stack = inspect.stack()
+            if len(stack) > 1:
+                frame = stack[1]
+                caller = {
+                    "file": frame.filename,
+                    "line": frame.lineno,
+                    "function": frame.function,
+                }
+        except Exception:
+            caller = None
+
+        # 运行环境信息（排查环境差异、编码/路径等问题时很有用）
+        runtime = {
+            "cwd": os.getcwd(),
+            "pid": os.getpid(),
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+        }
+
+        def _safe(obj: Any):
+            """将任意对象转换为可 JSON 序列化的结构，尽量保留信息。"""
+            try:
+                json.dumps(obj)
+                return obj
+            except Exception:
+                # dict
+                if isinstance(obj, dict):
+                    return {str(k): _safe(v) for k, v in obj.items()}
+                # list/tuple/set
+                if isinstance(obj, (list, tuple, set)):
+                    return [_safe(v) for v in obj]
+                # fallback
+                try:
+                    return repr(obj)
+                except Exception:
+                    return "<unserializable>"
+
+        safe_context = _safe(context or {})
+
+        # 更可靠的堆栈：traceback.format_exc() 依赖“当前正在抛出的异常”，
+        # 这里改为直接使用 exception.__traceback__。
+        tb = None
+        try:
+            tb = ''.join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+        except Exception:
+            tb = traceback.format_exc()
         
         # 构建异常信息
         exception_info = {
@@ -48,8 +101,10 @@ class ExceptionHandler:
             "timestamp": datetime.now().isoformat(),
             "exception_type": type(exception).__name__,
             "exception_message": str(exception),
-            "traceback": traceback.format_exc(),
-            "context": context or {}
+            "traceback": tb,
+            "caller": caller,
+            "runtime": runtime,
+            "context": safe_context,
         }
         
         # 记录到日志文件

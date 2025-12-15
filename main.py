@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich import print as rprint
 import pyperclip
 from exception_handler import exception_handler
+import inspect
 
 
 class ConfigManager:
@@ -36,6 +37,10 @@ class ConfigManager:
             # Proposal 弹窗内的 Template Term 下拉默认选择项
             # 例如："Commission Tier Terms" / "Public Terms" / "Ulanzi Terms"
             "template_term": "Commission Tier Terms",
+            # 发生异常时是否截图（页面+尽可能元素），截图保存在 logs/screenshots
+            "screenshot_on_error": True,
+            # 是否整页截图（True=整页，False=仅可视区域；整页对浏览器内核版本有要求且更慢）
+            "screenshot_full_page": False,
         }
         
         # 确保目录存在
@@ -210,11 +215,33 @@ class TemplateManager:
 class BrowserManager:
     """浏览器管理类，负责浏览器连接和元素操作"""
     
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, config: ConfigManager | None = None):
         self.browser = None
         self.tab = None
         self.console = console
         self.max_retries = 3
+        self.config = config
+
+        base_dir = None
+        try:
+            base_dir = getattr(config, 'base_dir', None)
+        except Exception:
+            base_dir = None
+        self.base_dir = base_dir or os.path.dirname(__file__)
+
+        settings = {}
+        try:
+            if config:
+                settings = config.load_settings() or {}
+        except Exception:
+            settings = {}
+
+        self.screenshot_on_error = bool(settings.get('screenshot_on_error', True))
+        self.screenshot_full_page = bool(settings.get('screenshot_full_page', False))
+        self.screenshot_dir = os.path.join(self.base_dir, 'logs', 'screenshots')
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        self._last_screenshot_ts = 0.0
+        self._screenshot_min_interval = 1.5
     
     def init(self) -> bool:
         """初始化或重新连接浏览器"""
@@ -249,6 +276,103 @@ class BrowserManager:
     def is_connected(self) -> bool:
         """检查浏览器是否已连接"""
         return self.tab is not None
+
+    def _get_page_context(self) -> dict:
+        """获取当前页面上下文信息（用于异常日志定位问题）。"""
+        ctx = {}
+        try:
+            if self.tab:
+                try:
+                    ctx["url"] = self.tab.url
+                except Exception:
+                    pass
+                try:
+                    # 某些版本可能没有 title 属性，失败则忽略
+                    ctx["title"] = getattr(self.tab, "title", None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return ctx
+
+    def _ele_brief(self, ele) -> dict | None:
+        """提取元素的关键信息，避免日志过大。"""
+        if not ele:
+            return None
+        info = {}
+        try:
+            info["tag"] = getattr(ele, "tag", None)
+        except Exception:
+            pass
+
+        def _attr(name: str):
+            try:
+                return ele.attr(name)
+            except Exception:
+                return None
+
+        for k in ("id", "class", "data-testid", "data-pa-testid", "role", "name"):
+            v = _attr(k)
+            if v:
+                info[k] = v
+        try:
+            t = (ele.text or "").strip()
+            if t:
+                info["text"] = t[:200]
+        except Exception:
+            pass
+        return info or None
+
+    def _caller_brief(self) -> dict | None:
+        """返回调用 BrowserManager 方法的业务函数位置，便于快速定位。"""
+        try:
+            stack = inspect.stack()
+            # [0] 当前方法，[1] BrowserManager 内部调用者，[2] 通常是业务层
+            if len(stack) > 2:
+                frame = stack[2]
+                return {"file": frame.filename, "line": frame.lineno, "function": frame.function}
+        except Exception:
+            return None
+        return None
+
+    def _capture_screenshot(self, reason: str, element=None) -> dict | None:
+        """按 DrissionPage 文档调用 get_screenshot() 保存截图，并返回路径信息。"""
+        if not self.screenshot_on_error:
+            return None
+        if not self.tab:
+            return None
+        now = time.time()
+        if now - self._last_screenshot_ts < self._screenshot_min_interval:
+            return None
+        self._last_screenshot_ts = now
+
+        def _safe_name(s: str) -> str:
+            s = (s or 'error').strip()
+            s = re.sub(r'[^a-zA-Z0-9\-_.]+', '_', s)
+            return s[:80] if len(s) > 80 else s
+
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        tag = _safe_name(reason)
+        info = {"reason": reason}
+        try:
+            page_name = f"page_{stamp}_{tag}.jpg"
+            page_path = self.tab.get_screenshot(
+                path=self.screenshot_dir,
+                name=page_name,
+                full_page=self.screenshot_full_page,
+            )
+            info["page"] = page_path
+        except Exception as e:
+            info["page_error"] = str(e)
+
+        if element:
+            try:
+                ele_name = f"ele_{stamp}_{tag}.jpg"
+                ele_path = element.get_screenshot(path=self.screenshot_dir, name=ele_name)
+                info["element"] = ele_path
+            except Exception as e:
+                info["element_error"] = str(e)
+        return info
     
     def find_element(self, locator: str, timeout: int = 3, parent=None):
         """安全地查找元素"""
@@ -258,12 +382,17 @@ class BrowserManager:
             return element
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
+            shot = self._capture_screenshot(f"find_element_{locator}")
             exception_handler.log_exception(
                 e,
                 context={
                     "operation": "查找元素",
                     "locator": locator,
                     "timeout": timeout
+                    ,"page": self._get_page_context()
+                    ,"parent": self._ele_brief(parent)
+                    ,"caller": self._caller_brief()
+                    ,"screenshot": shot
                 }
             )
             return None
@@ -271,6 +400,7 @@ class BrowserManager:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
+                shot = self._capture_screenshot(f"find_element_disconnect_{locator}")
                 exception_handler.log_exception(
                     e,
                     context={
@@ -278,6 +408,10 @@ class BrowserManager:
                         "locator": locator,
                         "timeout": timeout,
                         "error_type": "页面断开"
+                        ,"page": self._get_page_context()
+                        ,"parent": self._ele_brief(parent)
+                        ,"caller": self._caller_brief()
+                        ,"screenshot": shot
                     }
                 )
                 return None
@@ -291,12 +425,17 @@ class BrowserManager:
             return elements if elements else []
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
+            shot = self._capture_screenshot(f"find_elements_{locator}")
             exception_handler.log_exception(
                 e,
                 context={
                     "operation": "查找多个元素",
                     "locator": locator,
                     "timeout": timeout
+                    ,"page": self._get_page_context()
+                    ,"parent": self._ele_brief(parent)
+                    ,"caller": self._caller_brief()
+                    ,"screenshot": shot
                 }
             )
             return []
@@ -304,6 +443,7 @@ class BrowserManager:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
+                shot = self._capture_screenshot(f"find_elements_disconnect_{locator}")
                 exception_handler.log_exception(
                     e,
                     context={
@@ -311,6 +451,10 @@ class BrowserManager:
                         "locator": locator,
                         "timeout": timeout,
                         "error_type": "页面断开"
+                        ,"page": self._get_page_context()
+                        ,"parent": self._ele_brief(parent)
+                        ,"caller": self._caller_brief()
+                        ,"screenshot": shot
                     }
                 )
                 return []
@@ -326,6 +470,18 @@ class BrowserManager:
             return True
         except Exception as e:
             logger.warning(f"点击元素失败: {e}")
+            shot = self._capture_screenshot("click", element=element)
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "点击元素",
+                    "by_js": by_js,
+                    "page": self._get_page_context(),
+                    "element": self._ele_brief(element),
+                    "caller": self._caller_brief(),
+                    "screenshot": shot,
+                },
+            )
             return False
     
     def wait_for_page_ready(self, timeout: int = 10) -> bool:
@@ -345,6 +501,17 @@ class BrowserManager:
             return True
         except Exception as e:
             logger.warning(f"滚动失败: {e}")
+            shot = self._capture_screenshot(f"scroll_down_{pixels}")
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "向下滚动",
+                    "pixels": pixels,
+                    "page": self._get_page_context(),
+                    "caller": self._caller_brief(),
+                    "screenshot": shot,
+                },
+            )
             return False
     
     def scroll_to_element(self, element) -> bool:
@@ -354,6 +521,17 @@ class BrowserManager:
             return True
         except Exception as e:
             logger.warning(f"滚动到元素失败: {e}")
+            shot = self._capture_screenshot("scroll_to_element", element=element)
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "滚动到元素",
+                    "page": self._get_page_context(),
+                    "element": self._ele_brief(element),
+                    "caller": self._caller_brief(),
+                    "screenshot": shot,
+                },
+            )
             return False
     
     def navigate(self, url: str) -> bool:
@@ -1280,7 +1458,7 @@ class ImpactRPA:
         self.console = Console()
         self.config = ConfigManager()
         self.template_manager = TemplateManager(self.config)
-        self.browser = BrowserManager(self.console)
+        self.browser = BrowserManager(self.console, self.config)
         self.proposal_sender = ProposalSender(self.browser, self.template_manager, self.console, self.config)
         self.menu = MenuUI(self.config, self.template_manager, self.console)
     
