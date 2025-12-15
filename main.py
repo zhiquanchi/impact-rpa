@@ -658,11 +658,29 @@ class ProposalSender:
                 parent = term_section.parent()
                 for _ in range(5):
                     if parent:
-                        dropdown_btn = parent.ele('css:button, [class*="select"], [class*="dropdown"]', timeout=0.5)
+                        # 优先点中该控件的“下拉触发器”按钮
+                        dropdown_btn = parent.ele(
+                            'css:button[data-testid="uicl-multi-select-input-button"]',
+                            timeout=0.2,
+                        )
+                        if not dropdown_btn:
+                            dropdown_btn = parent.ele(
+                                'css:button.iui-multi-select-input-button, button[aria-haspopup="listbox"], button[role="button"]',
+                                timeout=0.2,
+                            )
+                        if not dropdown_btn:
+                            dropdown_btn = parent.ele(
+                                'css:button, [class*="select"], [class*="dropdown"]',
+                                timeout=0.2,
+                            )
+
                         if dropdown_btn:
                             dropdown_btn.click(by_js=True)
-                            time.sleep(0.3)
-                            break
+                            # 等待下拉列表弹出
+                            dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                            if dropdown:
+                                break
+                            time.sleep(0.2)
                         parent = parent.parent()
             
             time.sleep(0.3)
