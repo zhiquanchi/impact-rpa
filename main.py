@@ -469,6 +469,16 @@ class BrowserManager:
                 element.click()
             return True
         except Exception as e:
+            error_msg = str(e).lower()
+            if 'norect' in error_msg or '没有位置' in error_msg:
+                try:
+                    self.scroll_to_element(element)
+                    time.sleep(0.3)
+                    element.click(by_js=True)
+                    return True
+                except:
+                    pass
+            
             logger.warning(f"点击元素失败: {e}")
             shot = self._capture_screenshot("click", element=element)
             exception_handler.log_exception(
@@ -688,7 +698,7 @@ class ProposalSender:
                         selected_tab = self._get_selected_tab_value(btn)
                         
                         parent = btn.parent()
-                        for _ in range(10):
+                        for retry_idx in range(10):
                             if parent:
                                 try:
                                     self.browser.scroll_to_element(parent)
@@ -696,7 +706,22 @@ class ProposalSender:
                                     parent.hover()
                                     time.sleep(0.3)
                                     
-                                    if not self.browser.click(btn):
+                                    clicked = False
+                                    try:
+                                        btn.click(by_js=True)
+                                        clicked = True
+                                    except Exception as click_err:
+                                        error_msg = str(click_err).lower()
+                                        if 'norect' in error_msg or '没有位置' in error_msg:
+                                            try:
+                                                parent.click(by_js=True)
+                                                clicked = True
+                                            except:
+                                                pass
+                                        if not clicked:
+                                            raise click_err
+                                    
+                                    if not clicked:
                                         raise Exception("点击按钮失败")
                                     
                                     clicked_count += 1
@@ -715,7 +740,10 @@ class ProposalSender:
                                     error_msg = str(e).lower()
                                     if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                                         raise
-                                    parent = parent.parent()
+                                    if retry_idx < 9:
+                                        parent = parent.parent()
+                                    else:
+                                        raise
                             else:
                                 break
                     except Exception as e:
@@ -831,6 +859,8 @@ class ProposalSender:
                 except Exception as e:
                     print(f"  -> <select> 选择 Template Term 失败，尝试自定义下拉: {e}")
             
+            opened = False
+
             term_section = iframe.ele('text:Template Term', timeout=2)
             if term_section:
                 parent = term_section.parent()
@@ -857,9 +887,36 @@ class ProposalSender:
                             # 等待下拉列表弹出
                             dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
                             if dropdown:
+                                opened = True
                                 break
                             time.sleep(0.2)
                         parent = parent.parent()
+
+            # 兜底：不依赖“Template Term”文本区域，直接找触发器点击（避免 DOM 结构变化导致 parent 链找不到）
+            if not opened:
+                try:
+                    dropdown_btn = iframe.ele('css:button[data-testid="uicl-multi-select-input-button"]', timeout=0.5)
+                    if not dropdown_btn:
+                        dropdown_btn = iframe.ele('css:.iui-multi-select-input-button', timeout=0.5)
+                    if dropdown_btn:
+                        dropdown_btn.click(by_js=True)
+                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                        if dropdown:
+                            opened = True
+                except Exception:
+                    pass
+
+            # 再兜底：有些实现点击按钮内部的文字也能展开
+            if not opened:
+                try:
+                    please_select = iframe.ele('css:span.please-select', timeout=0.5)
+                    if please_select:
+                        please_select.click(by_js=True)
+                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                        if dropdown:
+                            opened = True
+                except Exception:
+                    pass
             
             time.sleep(0.3)
 
@@ -870,30 +927,38 @@ class ProposalSender:
                 dropdown = dropdowns[-1]
 
             if dropdown:
-                opt = dropdown.ele(
-                    f'xpath:.//li[@role="option"][.//*[normalize-space()="{desired}"]]'
-                )
-                if opt:
-                    opt.click(by_js=True)
+                try:
+                    opt = dropdown.ele(
+                        f'xpath:.//li[@role="option"][.//*[normalize-space()="{desired}"]]'
+                    )
+                    if opt:
+                        opt.click(by_js=True)
+                        print(f"  -> 已选择 Template Term: {desired}")
+                        time.sleep(0.3)
+                        return True
+                except:
+                    pass
+
+            try:
+                desired_ele = iframe.ele(f'text={desired}', timeout=2)
+                if desired_ele:
+                    desired_ele.click(by_js=True)
                     print(f"  -> 已选择 Template Term: {desired}")
                     time.sleep(0.3)
                     return True
-
-            # 备用：直接用文本定位（可能会命中多个，稳定性略低）
-            desired_ele = iframe.ele(f'text={desired}', timeout=2)
-            if desired_ele:
-                desired_ele.click(by_js=True)
-                print(f"  -> 已选择 Template Term: {desired}")
-                time.sleep(0.3)
-                return True
+            except:
+                pass
 
             term_options = iframe.eles('css:div.text-ellipsis')
             for opt in term_options:
-                if opt and opt.text and opt.text.strip() == desired:
-                    opt.click(by_js=True)
-                    print(f"  -> 已选择 Template Term: {desired}")
-                    time.sleep(0.3)
-                    return True
+                try:
+                    if opt and opt.text and opt.text.strip() == desired:
+                        opt.click(by_js=True)
+                        print(f"  -> 已选择 Template Term: {desired}")
+                        time.sleep(0.3)
+                        return True
+                except:
+                    continue
             
             print(f"  -> 未找到 Template Term 下拉框或选项: {desired}")
             return False
