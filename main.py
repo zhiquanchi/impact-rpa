@@ -32,7 +32,10 @@ class ConfigManager:
             "max_proposals": 10,
             "scroll_delay": 1.0,
             "click_delay": 0.5,
-            "modal_wait": 20.0
+            "modal_wait": 20.0,
+            # Proposal 弹窗内的 Template Term 下拉默认选择项
+            # 例如："Commission Tier Terms" / "Public Terms" / "Ulanzi Terms"
+            "template_term": "Commission Tier Terms",
         }
         
         # 确保目录存在
@@ -377,6 +380,7 @@ class ProposalSender:
         self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
         self.modal_poll_interval = 0.2
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
+        self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
     
@@ -615,7 +619,7 @@ class ProposalSender:
                 print("  -> 未找到弹窗 iframe")
                 return False
             
-            self._select_template_term(iframe)
+            self._select_template_term(iframe, self.template_term)
             
             if selected_tab:
                 self._input_tag_and_select(iframe, selected_tab)
@@ -633,16 +637,21 @@ class ProposalSender:
             print(f"  -> 处理弹窗失败: {e}")
         return False
     
-    def _select_template_term(self, iframe) -> bool:
+    def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
         """选择 Template Term"""
         try:
+            desired = (term_text or "Commission Tier Terms").strip()
+
             term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
             
             if term_dropdown:
-                term_dropdown.select('Public Terms')
-                print("  -> 已选择 Template Term: Public Terms")
-                time.sleep(0.3)
-                return True
+                try:
+                    term_dropdown.select(desired)
+                    print(f"  -> 已选择 Template Term: {desired}")
+                    time.sleep(0.3)
+                    return True
+                except Exception as e:
+                    print(f"  -> <select> 选择 Template Term 失败，尝试自定义下拉: {e}")
             
             term_section = iframe.ele('text:Template Term', timeout=2)
             if term_section:
@@ -657,22 +666,40 @@ class ProposalSender:
                         parent = parent.parent()
             
             time.sleep(0.3)
-            public_terms = iframe.ele('text:Public Terms', timeout=2)
-            if public_terms:
-                public_terms.click(by_js=True)
-                print("  -> 已选择 Template Term: Public Terms")
+
+            # 优先在当前弹出的 uicl-dropdown 中精确点击目标项（更稳定，避免点到别的区域同名文本）
+            dropdown = None
+            dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
+            if dropdowns:
+                dropdown = dropdowns[-1]
+
+            if dropdown:
+                opt = dropdown.ele(
+                    f'xpath:.//li[@role="option"][.//*[normalize-space()="{desired}"]]'
+                )
+                if opt:
+                    opt.click(by_js=True)
+                    print(f"  -> 已选择 Template Term: {desired}")
+                    time.sleep(0.3)
+                    return True
+
+            # 备用：直接用文本定位（可能会命中多个，稳定性略低）
+            desired_ele = iframe.ele(f'text={desired}', timeout=2)
+            if desired_ele:
+                desired_ele.click(by_js=True)
+                print(f"  -> 已选择 Template Term: {desired}")
                 time.sleep(0.3)
                 return True
-            
+
             term_options = iframe.eles('css:div.text-ellipsis')
             for opt in term_options:
-                if 'Public Terms' in opt.text and 'Public Terms' == opt.text.strip():
+                if opt and opt.text and opt.text.strip() == desired:
                     opt.click(by_js=True)
-                    print("  -> 已选择 Template Term: Public Terms")
+                    print(f"  -> 已选择 Template Term: {desired}")
                     time.sleep(0.3)
                     return True
             
-            print("  -> 未找到 Template Term 下拉框或 Public Terms 选项")
+            print(f"  -> 未找到 Template Term 下拉框或选项: {desired}")
             return False
             
         except Exception as e:
