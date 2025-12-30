@@ -79,15 +79,15 @@ class ExceptionHandler:
             logger.error(f"写入异常日志失败: {e}")
     
     def _send_feishu_notification(self, exception_info: Dict[str, Any]):
-        """
-        发送飞书通知（预留接口）
-        
-        Args:
-            exception_info: 异常信息字典
-        """
-        # TODO: 实现飞书通知功能
-        logger.info("飞书通知功能待实现")
-        pass
+        try:
+            from notification_service import NotificationService, NotificationPayload
+            service = NotificationService()
+            title = "Impact-RPA 异常"
+            message = f"{exception_info.get('exception_type')}: {exception_info.get('exception_message')}"
+            payload = NotificationPayload(title=title, message=message)
+            service.send(payload)
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}")
     
     def get_recent_exceptions(self, count: int = 10) -> list:
         """

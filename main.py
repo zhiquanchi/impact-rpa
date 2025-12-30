@@ -1540,6 +1540,11 @@ class ImpactRPA:
         # 初始化浏览器
         if not self.browser.init():
             self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+            try:
+                from notification_service import NotificationService, NotificationPayload
+                NotificationService().send(NotificationPayload(message="无法连接浏览器"))
+            except Exception:
+                pass
             return
         
         self._main_loop()
@@ -1591,7 +1596,19 @@ class ImpactRPA:
             self.console.print("[yellow]已取消[/yellow]")
             return
         
-        self.proposal_sender.send_proposals(max_count, template)
+        try:
+            count = self.proposal_sender.send_proposals(max_count, template)
+            try:
+                from notification_service import NotificationService, NotificationPayload
+                NotificationService().send(NotificationPayload(message=f"发送完成，共发送 {count} 个"))
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                from notification_service import NotificationService, NotificationPayload
+                NotificationService().send(NotificationPayload(message=f"发送失败: {e}"))
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
