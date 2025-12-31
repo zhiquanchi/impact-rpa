@@ -1099,53 +1099,103 @@ class ProposalSender:
                 date_btn.click(by_js=None)
                 logger.info("已打开日期选择器")
                 time.sleep(0.5)
-                
-                tomorrow = datetime.now() + timedelta(days=1)
-                tomorrow_day = str(tomorrow.day)
-                
-                def try_pick_day() -> bool:
-                    date_cells = iframe.eles('css:td, .day, [class*="day"], [class*="date"]')
+
+                target_date = datetime.now() + timedelta(days=1)
+                target_day = str(target_date.day)
+                target_iso = target_date.strftime('%Y-%m-%d')
+
+                def _is_disabled(ele) -> bool:
+                    try:
+                        aria_disabled = (ele.attr('aria-disabled') or '').strip().lower()
+                        if aria_disabled == 'true':
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        cls = (ele.attr('class') or '').lower()
+                        if any(k in cls for k in ('disabled', 'inactive', 'outside', 'other', 'old', 'new', 'muted')):
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        if ele.attr('disabled') is not None:
+                            return True
+                    except Exception:
+                        pass
+                    return False
+
+                def try_pick_target_in_view() -> bool:
+                    selectors = 'css:button, [role="gridcell"], td, .day, [class*="day"], [class*="date"]'
+                    date_cells = iframe.eles(selectors)
+
+                    # 优先通过属性匹配完整日期，避免跨月时误点同名日期
                     for cell in date_cells:
                         try:
-                            if (cell.text or '').strip() == tomorrow_day:
+                            if _is_disabled(cell):
+                                continue
+                            attrs = []
+                            for k in ('data-date', 'data-day', 'aria-label', 'title', 'data-testid'):
+                                try:
+                                    v = cell.attr(k)
+                                    if v:
+                                        attrs.append(str(v))
+                                except Exception:
+                                    continue
+                            attrs_text = ' '.join(attrs)
+                            if target_iso in attrs_text or target_iso.replace('-', '/') in attrs_text:
                                 try:
                                     cell.wait.clickable()
                                 except Exception:
                                     pass
                                 cell.click(by_js=None)
-                                logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                                logger.info(f"已选择日期: {target_iso}")
                                 time.sleep(0.3)
                                 return True
                         except Exception:
                             continue
-                    try:
-                        date_ele = iframe.ele(f'text={tomorrow_day}', timeout=1)
-                        if date_ele:
+
+                    # 兜底：按日历格子的文本点击（已尽量过滤 disabled/outside-month）
+                    for cell in date_cells:
+                        try:
+                            if _is_disabled(cell):
+                                continue
+                            if (cell.text or '').strip() != target_day:
+                                continue
                             try:
-                                date_ele.wait.clickable()
+                                cell.wait.clickable()
                             except Exception:
                                 pass
-                            date_ele.click(by_js=None)
-                            logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                            logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                            cell.click(by_js=None)
+                            logger.info(f"已选择日期: {target_iso}")
                             time.sleep(0.3)
                             return True
-                    except Exception:
-                        pass
+                        except Exception:
+                            continue
+
                     return False
-                
-                if try_pick_day():
-                    return True
-                
-                def click_next_month() -> bool:
-                    selectors = [
-                        'css:button[aria-label="Next"]',
-                        'css:button[aria-label*="Next"]',
-                        'css:[data-testid*="next"]',
-                        'css:.next',
-                        'css:[class*="next"]',
-                        'css:[class*="chevron-right"]',
-                    ]
+
+                def click_month(direction: str) -> bool:
+                    if direction == 'prev':
+                        selectors = [
+                            'css:button[aria-label="Previous"]',
+                            'css:button[aria-label*="Previous"]',
+                            'css:button[aria-label*="Prev"]',
+                            'css:[data-testid*="prev"]',
+                            'css:.prev',
+                            'css:[class*="prev"]',
+                            'css:[class*="chevron-left"]',
+                        ]
+                    else:
+                        selectors = [
+                            'css:button[aria-label="Next"]',
+                            'css:button[aria-label*="Next"]',
+                            'css:button[aria-label*="Next month"]',
+                            'css:[data-testid*="next"]',
+                            'css:.next',
+                            'css:[class*="next"]',
+                            'css:[class*="chevron-right"]',
+                        ]
+
                     for sel in selectors:
                         btn = iframe.ele(sel, timeout=0.5)
                         if btn:
@@ -1156,15 +1206,18 @@ class ProposalSender:
                             except Exception:
                                 continue
                     return False
-                
-                for _ in range(2):
-                    if click_next_month() and try_pick_day():
+
+                now = datetime.now()
+                months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
+                direction = 'next' if months_diff >= 0 else 'prev'
+
+                for step in range(abs(months_diff) + 1):
+                    if step > 0 and not click_month(direction):
+                        break
+                    if try_pick_target_in_view():
                         return True
-                
-                logger.warning("未找到明天的日期（可能需要检查日期控件结构）")
-                return False
-                
-                logger.warning("未找到明天的日期")
+
+                logger.warning(f"未找到目标日期: {target_iso}（可能需要检查日期控件结构）")
                 return False
             else:
                 logger.warning("未找到日期输入按钮")
