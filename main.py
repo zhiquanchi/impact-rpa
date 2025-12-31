@@ -833,7 +833,7 @@ class ProposalSender:
         try:
             iframe = self._wait_for_modal_iframe()
             if not iframe:
-            logger.warning("未找到弹窗 iframe")
+                logger.warning("未找到弹窗 iframe")
                 return False
             
             ok = self._select_template_term(iframe, self.template_term)
