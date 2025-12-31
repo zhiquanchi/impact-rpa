@@ -579,6 +579,7 @@ class ProposalSender:
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
+        self.config = config
     
     def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> int:
         """
@@ -798,6 +799,8 @@ class ProposalSender:
                     consecutive_errors += 1
                 else:
                     logger.error(f"循环中出错: {e}")
+                    if 'template_term_not_found' in error_msg:
+                        raise
                     consecutive_errors += 1
         
         logger.info(f"发送完成，共发送 {clicked_count} 个 Send Proposal")
@@ -833,7 +836,9 @@ class ProposalSender:
                 print("  -> 未找到弹窗 iframe")
                 return False
             
-            self._select_template_term(iframe, self.template_term)
+            ok = self._select_template_term(iframe, self.template_term)
+            if not ok:
+                raise RuntimeError(f"template_term_not_found: {self.template_term}")
             
             if selected_tab:
                 self._input_tag_and_select(iframe, selected_tab)
@@ -855,6 +860,8 @@ class ProposalSender:
         """选择 Template Term"""
         try:
             desired = (term_text or "Commission Tier Terms").strip()
+            desired_norm = re.sub(r'\s*\(\d+\)\s*$', '', desired).strip().lower()
+            desired_norm = re.sub(r'\s+', ' ', desired_norm)
 
             term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
             
@@ -935,17 +942,54 @@ class ProposalSender:
                 dropdown = dropdowns[-1]
 
             if dropdown:
-                try:
-                    opt = dropdown.ele(
-                        f'xpath:.//li[@role="option"][.//*[normalize-space()="{desired}"]]'
-                    )
-                    if opt:
-                        opt.click(by_js=True)
-                        print(f"  -> 已选择 Template Term: {desired}")
+                options = []
+                items = dropdown.eles('xpath:.//li[@role="option"]')
+                for it in items or []:
+                    txt = it.text or ''
+                    txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
+                    txtn = re.sub(r'\s+', ' ', txtn)
+                    options.append((txt, txtn, it))
+                if not options:
+                    nodes = dropdown.eles('css:div.text-ellipsis')
+                    for it in nodes or []:
+                        txt = it.text or ''
+                        txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
+                        txtn = re.sub(r'\s+', ' ', txtn)
+                        options.append((txt, txtn, it))
+                matches = [(t, n, e) for (t, n, e) in options if n == desired_norm or desired_norm in n or n in desired_norm]
+                if len(matches) == 1:
+                    matches[0][2].click(by_js=True)
+                    print(f"  -> 已选择 Template Term: {matches[0][0]}")
+                    time.sleep(0.3)
+                    return True
+                if len(matches) > 1:
+                    self.console.print("\n[bold]检测到多个匹配项，请选择：[/bold]")
+                    for idx, (t, _, _) in enumerate(matches, start=1):
+                        self.console.print(f"{idx}. {t}")
+                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(matches) or "请输入有效编号").ask()
+                    if sel and sel.isdigit():
+                        pick = matches[int(sel)-1]
+                        pick[2].click(by_js=True)
+                        settings = self.config.load_settings()
+                        settings['template_term'] = pick[0]
+                        self.config.save_settings(settings)
+                        print(f"  -> 已选择 Template Term: {pick[0]}")
                         time.sleep(0.3)
                         return True
-                except:
-                    pass
+                if not matches and options:
+                    self.console.print("\n[bold]未匹配到配置项，以下为所有可选项：[/bold]")
+                    for idx, (t, _, _) in enumerate(options, start=1):
+                        self.console.print(f"{idx}. {t}")
+                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(options) or "请输入有效编号").ask()
+                    if sel and sel.isdigit():
+                        pick = options[int(sel)-1]
+                        pick[2].click(by_js=True)
+                        settings = self.config.load_settings()
+                        settings['template_term'] = pick[0]
+                        self.config.save_settings(settings)
+                        print(f"  -> 已选择 Template Term: {pick[0]}")
+                        time.sleep(0.3)
+                        return True
 
             try:
                 desired_ele = iframe.ele(f'text={desired}', timeout=2)
@@ -960,15 +1004,18 @@ class ProposalSender:
             term_options = iframe.eles('css:div.text-ellipsis')
             for opt in term_options:
                 try:
-                    if opt and opt.text and opt.text.strip() == desired:
-                        opt.click(by_js=True)
-                        print(f"  -> 已选择 Template Term: {desired}")
-                        time.sleep(0.3)
-                        return True
+                    if opt and opt.text:
+                        txt = re.sub(r'\s*\(\d+\)\s*$', '', opt.text).strip().lower()
+                        txt = re.sub(r'\s+', ' ', txt)
+                        if txt == desired_norm or desired_norm in txt:
+                            opt.click(by_js=True)
+                            print(f"  -> 已选择 Template Term: {desired}")
+                            time.sleep(0.3)
+                            return True
                 except:
                     continue
             
-            print(f"  -> 未找到 Template Term 下拉框或选项: {desired}")
+            self.console.print("\n[bold]未找到可选项[/bold]")
             return False
             
         except Exception as e:
@@ -1213,7 +1260,8 @@ class MenuUI:
             questionary.Choice("✏️  编辑留言模板", value="3"),
             questionary.Choice("🔢 设置发送数量", value="4"),
             questionary.Choice("⚙️  查看当前设置", value="5"),
-            questionary.Choice("🚪 退出程序", value="0"),
+            questionary.Choice("🔧 设置 Template Term 文本", value="6"),
+            questionary.Choice("🚪  退出程序", value="0"),
         ]
         
         return questionary.select(
@@ -1519,9 +1567,22 @@ class MenuUI:
         table.add_row("滚动延迟", f"{settings['scroll_delay']} 秒")
         table.add_row("点击延迟", f"{settings['click_delay']} 秒")
         table.add_row("弹窗等待", f"{settings['modal_wait']} 秒")
+        table.add_row("Template Term", (settings.get('template_term') or '').strip() or "(未设置)")
         
         self.console.print(table)
         questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
+    
+    def set_template_term(self):
+        """设置 Template Term 文本"""
+        settings = self.config.load_settings()
+        current = (settings.get('template_term') or '').strip()
+        new_value = questionary.text("请输入 Template Term 文本:", default=current).ask()
+        if new_value is None:
+            return
+        new_value = (new_value or '').strip()
+        settings['template_term'] = new_value
+        if self.config.save_settings(settings):
+            self.console.print(f"[bold green]✓ Template Term 已设置为: {new_value or '(未设置)'}[/bold green]")
 
 
 class ImpactRPA:
@@ -1567,6 +1628,8 @@ class ImpactRPA:
                 self.menu.set_proposal_count()
             elif choice == '5':
                 self.menu.view_settings()
+            elif choice == '6':
+                self.menu.set_template_term()
             elif choice == '0':
                 self.console.print("\n[bold cyan]感谢使用，再见！👋[/bold cyan]")
                 break
