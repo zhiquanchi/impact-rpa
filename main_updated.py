@@ -1004,7 +1004,11 @@ class ProposalSender:
                             options.append((txt, txtn, it))
                     matches = [(t, n, e) for (t, n, e) in options if n == desired_norm or desired_norm in n or n in desired_norm]
                     if len(matches) == 1:
-                        self.browser.click(matches[0][2], by_js=True)
+                        try:
+                            matches[0][2].wait.clickable()
+                        except Exception:
+                            pass
+                        self.browser.click(matches[0][2], by_js=None)
                         print(f"  -> 已选择 Template Term: {matches[0][0]}")
                         time.sleep(0.3)
                         return True
@@ -1015,10 +1019,15 @@ class ProposalSender:
                         sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(matches) or "请输入有效编号").ask()
                         if sel and sel.isdigit():
                             pick = matches[int(sel)-1]
-                            self.browser.click(pick[2], by_js=True)
+                            try:
+                                pick[2].wait.clickable()
+                            except Exception:
+                                pass
+                            self.browser.click(pick[2], by_js=None)
                             settings = self.config.load_settings()
                             settings['template_term'] = pick[0]
                             self.config.save_settings(settings)
+                            self.template_term = pick[0]
                             print(f"  -> 已选择 Template Term: {pick[0]}")
                             time.sleep(0.3)
                             return True
@@ -1029,10 +1038,15 @@ class ProposalSender:
                         sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(options) or "请输入有效编号").ask()
                         if sel and sel.isdigit():
                             pick = options[int(sel)-1]
-                            self.browser.click(pick[2], by_js=True)
+                            try:
+                                pick[2].wait.clickable()
+                            except Exception:
+                                pass
+                            self.browser.click(pick[2], by_js=None)
                             settings = self.config.load_settings()
                             settings['template_term'] = pick[0]
                             self.config.save_settings(settings)
+                            self.template_term = pick[0]
                             print(f"  -> 已选择 Template Term: {pick[0]}")
                             time.sleep(0.3)
                             return True
@@ -1042,7 +1056,11 @@ class ProposalSender:
             try:
                 desired_ele = self.browser._wait_for_element_with_retry(f'text={desired}', timeout=2, parent=iframe)
                 if desired_ele:
-                    self.browser.click(desired_ele, by_js=True)
+                    try:
+                        desired_ele.wait.clickable()
+                    except Exception:
+                        pass
+                    self.browser.click(desired_ele, by_js=None)
                     print(f"  -> 已选择 Template Term: {desired}")
                     time.sleep(0.3)
                     return True
@@ -1056,7 +1074,11 @@ class ProposalSender:
                         txt = re.sub(r'\s*\(\d+\)\s*$', '', opt.text).strip().lower()
                         txt = re.sub(r'\s+', ' ', txt)
                         if txt == desired_norm or desired_norm in txt:
-                            self.browser.click(opt, by_js=True)
+                            try:
+                                opt.wait.clickable()
+                            except Exception:
+                                pass
+                            self.browser.click(opt, by_js=None)
                             print(f"  -> 已选择 Template Term: {desired}")
                             time.sleep(0.3)
                             return True
@@ -1118,28 +1140,78 @@ class ProposalSender:
         try:
             date_btn = self.browser._wait_for_element_with_retry('css:button[data-testid="uicl-date-input"]', timeout=3, parent=iframe)
             if date_btn:
-                self.browser.click(date_btn, by_js=True)
+                try:
+                    date_btn.wait.clickable()
+                except Exception:
+                    pass
+                self.browser.click(date_btn, by_js=None)
                 print("  -> 已打开日期选择器")
                 time.sleep(0.5)
 
                 tomorrow = datetime.now() + timedelta(days=1)
                 tomorrow_day = str(tomorrow.day)
 
-                date_cells = self.browser.find_elements('css:td, .day, [class*="day"], [class*="date"]', parent=iframe)
-                for cell in date_cells:
-                    if cell.text.strip() == tomorrow_day:
-                        self.browser.click(cell, by_js=True)
-                        print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                        time.sleep(0.3)
+                def try_pick_day() -> bool:
+                    date_cells = self.browser.find_elements('css:td, .day, [class*="day"], [class*="date"]', parent=iframe)
+                    for cell in date_cells:
+                        try:
+                            if (cell.text or '').strip() == tomorrow_day:
+                                try:
+                                    cell.wait.clickable()
+                                except Exception:
+                                    pass
+                                self.browser.click(cell, by_js=None)
+                                print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                                time.sleep(0.3)
+                                return True
+                        except Exception:
+                            continue
+                    try:
+                        date_ele = self.browser._wait_for_element_with_retry(f'text={tomorrow_day}', timeout=1, parent=iframe)
+                        if date_ele:
+                            try:
+                                date_ele.wait.clickable()
+                            except Exception:
+                                pass
+                            self.browser.click(date_ele, by_js=None)
+                            logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                            print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                            time.sleep(0.3)
+                            return True
+                    except Exception:
+                        pass
+                    return False
+
+                if try_pick_day():
+                    return True
+
+                def click_next_month() -> bool:
+                    selectors = [
+                        'css:button[aria-label="Next"]',
+                        'css:button[aria-label*="Next"]',
+                        'css:[data-testid*="next"]',
+                        'css:.next',
+                        'css:[class*="next"]',
+                        'css:[class*="chevron-right"]',
+                    ]
+                    for sel in selectors:
+                        btn = self.browser._wait_for_element_with_retry(sel, timeout=0.5, parent=iframe)
+                        if btn:
+                            try:
+                                self.browser.click(btn, by_js=True)
+                                time.sleep(0.4)
+                                return True
+                            except Exception:
+                                continue
+                    return False
+
+                for _ in range(2):
+                    if click_next_month() and try_pick_day():
                         return True
 
-                date_ele = self.browser._wait_for_element_with_retry(f'text={tomorrow_day}', timeout=2, parent=iframe)
-                if date_ele:
-                    self.browser.click(date_ele, by_js=True)
-                    logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                    print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                    time.sleep(0.3)
-                    return True
+                logger.warning("未找到明天的日期（可能需要检查日期控件结构）")
+                print("  -> 未找到明天的日期（可能需要检查日期控件结构）")
+                return False
 
                 logger.warning("未找到明天的日期")
                 print("  -> 未找到明天的日期")

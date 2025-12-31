@@ -825,7 +825,7 @@ class ProposalSender:
             if selected_tab_ele:
                 return selected_tab_ele.text.strip()
         except Exception as e:
-            print(f"  -> 获取 selected-tab 失败: {e}")
+            logger.error(f"获取 selected-tab 失败: {e}")
         return None
     
     def _handle_proposal_modal(self, selected_tab: str = None, template_content: str = "") -> bool:
@@ -833,7 +833,7 @@ class ProposalSender:
         try:
             iframe = self._wait_for_modal_iframe()
             if not iframe:
-                print("  -> 未找到弹窗 iframe")
+            logger.warning("未找到弹窗 iframe")
                 return False
             
             ok = self._select_template_term(iframe, self.template_term)
@@ -853,7 +853,7 @@ class ProposalSender:
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"处理弹窗时页面断开: {e}")
                 raise
-            print(f"  -> 处理弹窗失败: {e}")
+            logger.error(f"处理弹窗失败: {e}")
         return False
     
     def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
@@ -868,11 +868,11 @@ class ProposalSender:
             if term_dropdown:
                 try:
                     term_dropdown.select(desired)
-                    print(f"  -> 已选择 Template Term: {desired}")
+                    logger.info(f"已选择 Template Term: {desired}")
                     time.sleep(0.3)
                     return True
                 except Exception as e:
-                    print(f"  -> <select> 选择 Template Term 失败，尝试自定义下拉: {e}")
+                    logger.warning(f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}")
             
             opened = False
 
@@ -958,8 +958,12 @@ class ProposalSender:
                         options.append((txt, txtn, it))
                 matches = [(t, n, e) for (t, n, e) in options if n == desired_norm or desired_norm in n or n in desired_norm]
                 if len(matches) == 1:
-                    matches[0][2].click(by_js=True)
-                    print(f"  -> 已选择 Template Term: {matches[0][0]}")
+                    try:
+                        matches[0][2].wait.clickable()
+                    except Exception:
+                        pass
+                    matches[0][2].click(by_js=None)
+                    logger.info(f"已选择 Template Term: {matches[0][0]}")
                     time.sleep(0.3)
                     return True
                 if len(matches) > 1:
@@ -969,11 +973,16 @@ class ProposalSender:
                     sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(matches) or "请输入有效编号").ask()
                     if sel and sel.isdigit():
                         pick = matches[int(sel)-1]
-                        pick[2].click(by_js=True)
+                        try:
+                            pick[2].wait.clickable()
+                        except Exception:
+                            pass
+                        pick[2].click(by_js=None)
                         settings = self.config.load_settings()
                         settings['template_term'] = pick[0]
                         self.config.save_settings(settings)
-                        print(f"  -> 已选择 Template Term: {pick[0]}")
+                        self.template_term = pick[0]
+                        logger.info(f"已选择 Template Term: {pick[0]}")
                         time.sleep(0.3)
                         return True
                 if not matches and options:
@@ -983,19 +992,28 @@ class ProposalSender:
                     sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(options) or "请输入有效编号").ask()
                     if sel and sel.isdigit():
                         pick = options[int(sel)-1]
-                        pick[2].click(by_js=True)
+                        try:
+                            pick[2].wait.clickable()
+                        except Exception:
+                            pass
+                        pick[2].click(by_js=None)
                         settings = self.config.load_settings()
                         settings['template_term'] = pick[0]
                         self.config.save_settings(settings)
-                        print(f"  -> 已选择 Template Term: {pick[0]}")
+                        self.template_term = pick[0]
+                        logger.info(f"已选择 Template Term: {pick[0]}")
                         time.sleep(0.3)
                         return True
 
             try:
                 desired_ele = iframe.ele(f'text={desired}', timeout=2)
                 if desired_ele:
-                    desired_ele.click(by_js=True)
-                    print(f"  -> 已选择 Template Term: {desired}")
+                    try:
+                        desired_ele.wait.clickable()
+                    except Exception:
+                        pass
+                    desired_ele.click(by_js=None)
+                    logger.info(f"已选择 Template Term: {desired}")
                     time.sleep(0.3)
                     return True
             except:
@@ -1008,8 +1026,12 @@ class ProposalSender:
                         txt = re.sub(r'\s*\(\d+\)\s*$', '', opt.text).strip().lower()
                         txt = re.sub(r'\s+', ' ', txt)
                         if txt == desired_norm or desired_norm in txt:
-                            opt.click(by_js=True)
-                            print(f"  -> 已选择 Template Term: {desired}")
+                            try:
+                                opt.wait.clickable()
+                            except Exception:
+                                pass
+                            opt.click(by_js=None)
+                            logger.info(f"已选择 Template Term: {desired}")
                             time.sleep(0.3)
                             return True
                 except:
@@ -1019,7 +1041,7 @@ class ProposalSender:
             return False
             
         except Exception as e:
-            print(f"  -> 选择 Template Term 失败: {e}")
+            logger.error(f"选择 Template Term 失败: {e}")
             return False
     
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
@@ -1034,7 +1056,7 @@ class ProposalSender:
             tag_input.click(by_js=True)
             time.sleep(0.3)
             tag_input.input(search_text)
-            print(f"  -> 已输入 tag: {search_text}")
+            logger.info(f"已输入 tag: {search_text}")
             time.sleep(0.5)
             
             dropdown = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=3)
@@ -1049,7 +1071,7 @@ class ProposalSender:
                 option_div = options[0]
             
             option_text = option_div.text.strip()
-            print(f"  -> 下拉选项文本: {option_text}")
+            logger.info(f"下拉选项文本: {option_text}")
             
             option_category = re.sub(r'\s*\(\d+\)\s*$', '', option_text).replace(" ", "")
             
@@ -1057,12 +1079,12 @@ class ProposalSender:
                 raise Exception(f"输入值 '{search_text}' 与下拉选项 '{option_category}' 不匹配")
             
             option_div.click(by_js=True)
-            print(f"  -> 已选择下拉选项: {option_text}")
+            logger.info(f"已选择下拉选项: {option_text}")
             time.sleep(0.3)
             return True
             
         except Exception as e:
-            print(f"  -> 输入 tag 并选择失败: {e}")
+            logger.error(f"输入 tag 并选择失败: {e}")
             raise
     
     def _select_tomorrow_date(self, iframe) -> bool:
@@ -1070,40 +1092,88 @@ class ProposalSender:
         try:
             date_btn = iframe.ele('css:button[data-testid="uicl-date-input"]', timeout=3)
             if date_btn:
-                date_btn.click(by_js=True)
-                print("  -> 已打开日期选择器")
+                try:
+                    date_btn.wait.clickable()
+                except Exception:
+                    pass
+                date_btn.click(by_js=None)
+                logger.info("已打开日期选择器")
                 time.sleep(0.5)
                 
                 tomorrow = datetime.now() + timedelta(days=1)
                 tomorrow_day = str(tomorrow.day)
                 
-                date_cells = iframe.eles('css:td, .day, [class*="day"], [class*="date"]')
-                for cell in date_cells:
-                    if cell.text.strip() == tomorrow_day:
-                        cell.click(by_js=True)
-                        print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                        time.sleep(0.3)
-                        return True
+                def try_pick_day() -> bool:
+                    date_cells = iframe.eles('css:td, .day, [class*="day"], [class*="date"]')
+                    for cell in date_cells:
+                        try:
+                            if (cell.text or '').strip() == tomorrow_day:
+                                try:
+                                    cell.wait.clickable()
+                                except Exception:
+                                    pass
+                                cell.click(by_js=None)
+                                logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                                time.sleep(0.3)
+                                return True
+                        except Exception:
+                            continue
+                    try:
+                        date_ele = iframe.ele(f'text={tomorrow_day}', timeout=1)
+                        if date_ele:
+                            try:
+                                date_ele.wait.clickable()
+                            except Exception:
+                                pass
+                            date_ele.click(by_js=None)
+                            logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                            logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
+                            time.sleep(0.3)
+                            return True
+                    except Exception:
+                        pass
+                    return False
                 
-                date_ele = iframe.ele(f'text={tomorrow_day}', timeout=2)
-                if date_ele:
-                    date_ele.click(by_js=True)
-                    logger.info(f"已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                    print(f"  -> 已选择日期: {tomorrow.strftime('%Y-%m-%d')}")
-                    time.sleep(0.3)
+                if try_pick_day():
                     return True
                 
+                def click_next_month() -> bool:
+                    selectors = [
+                        'css:button[aria-label="Next"]',
+                        'css:button[aria-label*="Next"]',
+                        'css:[data-testid*="next"]',
+                        'css:.next',
+                        'css:[class*="next"]',
+                        'css:[class*="chevron-right"]',
+                    ]
+                    for sel in selectors:
+                        btn = iframe.ele(sel, timeout=0.5)
+                        if btn:
+                            try:
+                                btn.click(by_js=True)
+                                time.sleep(0.4)
+                                return True
+                            except Exception:
+                                continue
+                    return False
+                
+                for _ in range(2):
+                    if click_next_month() and try_pick_day():
+                        return True
+                
+                logger.warning("未找到明天的日期（可能需要检查日期控件结构）")
+                return False
+                
                 logger.warning("未找到明天的日期")
-                print("  -> 未找到明天的日期")
                 return False
             else:
                 logger.warning("未找到日期输入按钮")
-                print("  -> 未找到日期输入按钮")
+                logger.warning("未找到日期输入按钮")
                 return False
                 
         except Exception as e:
             logger.error(f"选择日期失败: {e}")
-            print(f"  -> 选择日期失败: {e}")
+            logger.error(f"选择日期失败: {e}")
         return False
     
     def _input_comment(self, iframe, template_content: str = "") -> bool:
@@ -1112,7 +1182,7 @@ class ProposalSender:
             template = template_content or self.template_manager.get_active_template()
             if not template:
                 logger.warning("留言模板为空")
-                print("  -> 留言模板为空")
+                logger.warning("留言模板为空")
                 return False
             
             textarea = iframe.ele('css:textarea[data-testid="uicl-textarea"]', timeout=3)
@@ -1121,7 +1191,7 @@ class ProposalSender:
             
             if not textarea:
                 logger.warning("未找到留言输入框")
-                print("  -> 未找到留言输入框")
+                logger.warning("未找到留言输入框")
                 return False
             
             textarea.click(by_js=True)
@@ -1129,13 +1199,13 @@ class ProposalSender:
             textarea.clear()
             textarea.input(template)
             logger.info("已填写留言内容")
-            print("  -> 已填写留言内容")
+            logger.info("已填写留言内容")
             time.sleep(0.3)
             return True
             
         except Exception as e:
             logger.error(f"填写留言失败: {e}")
-            print(f"  -> 填写留言失败: {e}")
+            logger.error(f"填写留言失败: {e}")
         return False
     
     def _submit_proposal(self, iframe) -> bool:
@@ -1145,7 +1215,7 @@ class ProposalSender:
             if submit_btn and 'Send Proposal' in submit_btn.text:
                 submit_btn.click(by_js=True)
                 logger.info("已点击提交按钮")
-                print("  -> 已点击提交按钮")
+                logger.info("已点击提交按钮")
                 time.sleep(1)
                 self._click_understand_button(iframe)
                 return True
@@ -1153,7 +1223,7 @@ class ProposalSender:
             submit_btn = iframe.ele('text:Send Proposal', timeout=2)
             if submit_btn and submit_btn.tag == 'button':
                 submit_btn.click(by_js=True)
-                print("  -> 已点击提交按钮")
+                logger.info("已点击提交按钮")
                 time.sleep(1)
                 self._click_understand_button(iframe)
                 return True
@@ -1162,16 +1232,16 @@ class ProposalSender:
             for btn in buttons:
                 if 'Send Proposal' in btn.text:
                     btn.click(by_js=True)
-                    print("  -> 已点击提交按钮")
+                    logger.info("已点击提交按钮")
                     time.sleep(1)
                     self._click_understand_button(iframe)
                     return True
             
-            print("  -> 未找到提交按钮")
+            logger.warning("未找到提交按钮")
             return False
             
         except Exception as e:
-            print(f"  -> 点击提交按钮失败: {e}")
+            logger.error(f"点击提交按钮失败: {e}")
         return False
     
     def _click_understand_button(self, iframe) -> bool:
@@ -1182,7 +1252,7 @@ class ProposalSender:
             understand_btn = self.browser.find_element('text:I understand', timeout=3, parent=iframe)
             if understand_btn and understand_btn.tag == 'button':
                 self.browser.click(understand_btn, by_js=True)
-                print("  -> 已点击 'I understand' 确认按钮")
+                logger.info("已点击 'I understand' 确认按钮")
                 time.sleep(0.5)
                 return True
             
@@ -1190,22 +1260,22 @@ class ProposalSender:
             for btn in buttons:
                 if btn and 'I understand' in (btn.text or ''):
                     self.browser.click(btn, by_js=True)
-                    print("  -> 已点击 'I understand' 确认按钮")
+                    logger.info("已点击 'I understand' 确认按钮")
                     time.sleep(0.5)
                     return True
             
             understand_btn = self.browser.find_element('text:I understand', timeout=2)
             if understand_btn and understand_btn.tag == 'button':
                 self.browser.click(understand_btn, by_js=True)
-                print("  -> 已点击 'I understand' 确认按钮")
+                logger.info("已点击 'I understand' 确认按钮")
                 time.sleep(0.5)
                 return True
             
-            print("  -> 未找到 'I understand' 按钮")
+            logger.warning("未找到 'I understand' 按钮")
             return False
             
         except Exception as e:
-            print(f"  -> 点击确认按钮失败: {e}")
+            logger.error(f"点击确认按钮失败: {e}")
         return False
 
     def _wait_for_modal_iframe(self):
