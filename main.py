@@ -41,6 +41,20 @@ class ConfigManager:
             "screenshot_on_error": True,
             # 是否整页截图（True=整页，False=仅可视区域；整页对浏览器内核版本有要求且更慢）
             "screenshot_full_page": False,
+            # 视觉 RPA 配置（兼容 OpenAI SDK 格式的 VL LLM）
+            "vision_rpa": {
+                "enabled": False,  # 是否启用视觉 RPA
+                "api_key": "",  # API Key，也可通过环境变量 VL_API_KEY 设置
+                "base_url": "",  # API 地址，也可通过环境变量 VL_BASE_URL 设置
+                "model": "gpt-4o",  # 模型名称
+                "max_tokens": 1024,
+                "temperature": 0.1,
+                "timeout": 30,
+                # 浏览器 UI 偏移（标签栏+地址栏高度，单位：像素）
+                # Chrome/Edge 通常约为 100-150px，可根据实际情况调整
+                "browser_ui_offset_x": 0,  # 内容区域左侧偏移
+                "browser_ui_offset_y": 0,  # 内容区域顶部偏移（约 100-150px）
+            },
         }
         
         # 确保目录存在
@@ -246,16 +260,59 @@ class BrowserManager:
     def init(self) -> bool:
         """初始化或重新连接浏览器"""
         try:
-            self.browser = Chromium()
+            # 尝试多种方式连接浏览器
+            # 方式1: 默认连接（自动查找浏览器）
             try:
-                impact_tab = self.browser.get_tab(url='impact')
-            except Exception:
-                impact_tab = None
-            self.tab = impact_tab or self.browser.latest_tab
-            logger.info("浏览器连接成功")
-            return True
+                self.browser = Chromium()
+                try:
+                    impact_tab = self.browser.get_tab(url='impact')
+                except Exception:
+                    impact_tab = None
+                self.tab = impact_tab or self.browser.latest_tab
+                if self.tab:
+                    logger.info("浏览器连接成功（默认方式）")
+                    return True
+            except Exception as e1:
+                logger.debug(f"默认连接方式失败: {e1}")
+            
+            # 方式2: 尝试连接已存在的浏览器（不启动新实例）
+            try:
+                self.browser = Chromium(addr_or_opts=None)  # 不指定地址，尝试连接现有浏览器
+                self.tab = self.browser.latest_tab
+                if self.tab:
+                    logger.info("浏览器连接成功（连接现有浏览器）")
+                    return True
+            except Exception as e2:
+                logger.debug(f"连接现有浏览器失败: {e2}")
+            
+            # 方式3: 尝试通过浏览器 ID 连接
+            try:
+                from DrissionPage import ChromiumOptions
+                # 不启动新浏览器，只连接现有实例
+                options = ChromiumOptions()
+                self.browser = Chromium(addr_or_opts=options)
+                self.tab = self.browser.latest_tab
+                if self.tab:
+                    logger.info("浏览器连接成功（通过选项）")
+                    return True
+            except Exception as e3:
+                logger.debug(f"通过选项连接失败: {e3}")
+            
+            # 如果所有方式都失败
+            logger.error("所有浏览器连接方式均失败")
+            self.console.print("[yellow]提示：请确保浏览器已打开，并允许 DrissionPage 连接[/yellow]")
+            self.console.print("[yellow]或者手动启动浏览器后重试[/yellow]")
+            self.console.print("[dim]常见解决方案：[/dim]")
+            self.console.print("[dim]1. 确保 Chrome/Edge 浏览器已打开[/dim]")
+            self.console.print("[dim]2. 检查是否有防火墙/安全软件阻止连接[/dim]")
+            self.console.print("[dim]3. 尝试以管理员权限运行[/dim]")
+            self.console.print("[dim]4. 如果使用 Chrome，尝试关闭所有 Chrome 窗口后重新打开[/dim]")
+            return False
+            
         except Exception as e:
             logger.error(f"浏览器连接失败: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def reconnect(self) -> bool:
@@ -562,6 +619,502 @@ class BrowserManager:
             return False
 
 
+class DatePickerResult:
+    """日期选择结果"""
+    
+    def __init__(self, success: bool, method: str = None, error: str = None):
+        self.success = success
+        self.method = method  # 'element_click', 'js_input', 'vision_rpa'
+        self.error = error
+
+
+class DatePicker:
+    """
+    日期选择器类，支持多种选择策略：
+    1. 元素点击方式 (element_click)
+    2. JS 输入方式 (js_input)
+    3. 视觉 RPA 方式 (vision_rpa) - 需要外部实现
+    """
+    
+    # 禁用状态的类名关键词
+    DISABLED_KEYWORDS = (
+        # Element Plus 特定
+        'disabled', 'today', 'current',  # Element Plus 使用 'today' 标记今天，但其他日期可能用不同标记
+        # 通用
+        'inactive', 'outside', 'other', 'old', 'muted',
+        'adjacent', 'faded', 'dim', 'grey', 'gray', 'secondary',
+        'prev-month', 'next-month', 'other-month', 'not-current',
+        'outsidemonth', 'notcurrent', 'grayed', 'unavailable',
+    )
+    
+    # 月份切换按钮选择器
+    PREV_MONTH_SELECTORS = [
+        # Element Plus 特定选择器
+        'css:.el-picker-panel__icon-btn.el-icon-arrow-left',
+        'css:.el-date-picker__header-btn.el-icon-arrow-left',
+        'css:button.el-picker-panel__icon-btn:first-child',
+        'css:.el-picker-panel__icon-btn[class*="arrow-left"]',
+        'css:.el-date-picker__header-btn[class*="arrow-left"]',
+        'css:i.el-icon-arrow-left',
+        'css:.el-icon-arrow-left',
+        # 通用选择器
+        'css:button[aria-label="Previous"]',
+        'css:button[aria-label*="Previous"]',
+        'css:button[aria-label*="Prev"]',
+        'css:button[aria-label*="previous"]',
+        'css:button[aria-label*="prev"]',
+        'css:[data-testid*="prev"]',
+        'css:[data-testid*="Prev"]',
+        'css:button.prev',
+        'css:.prev',
+        'css:[class*="prev"]',
+        'css:[class*="Prev"]',
+        'css:[class*="chevron-left"]',
+        'css:[class*="arrow-left"]',
+        'css:[class*="left-arrow"]',
+        'css:[class*="caret-left"]',
+        'css:button[title*="Previous"]',
+        'css:button[title*="previous"]',
+        'css:button[title*="Prev"]',
+    ]
+    
+    NEXT_MONTH_SELECTORS = [
+        # Element Plus 特定选择器
+        'css:.el-picker-panel__icon-btn.el-icon-arrow-right',
+        'css:.el-date-picker__header-btn.el-icon-arrow-right',
+        'css:button.el-picker-panel__icon-btn:last-child',
+        'css:.el-picker-panel__icon-btn[class*="arrow-right"]',
+        'css:.el-date-picker__header-btn[class*="arrow-right"]',
+        'css:i.el-icon-arrow-right',
+        'css:.el-icon-arrow-right',
+        # 通用选择器
+        'css:button[aria-label="Next"]',
+        'css:button[aria-label*="Next"]',
+        'css:button[aria-label*="Next month"]',
+        'css:button[aria-label*="next"]',
+        'css:[data-testid*="next"]',
+        'css:[data-testid*="Next"]',
+        'css:button.next',
+        'css:.next',
+        'css:[class*="next"]',
+        'css:[class*="Next"]',
+        'css:[class*="chevron-right"]',
+        'css:[class*="arrow-right"]',
+        'css:[class*="right-arrow"]',
+        'css:[class*="caret-right"]',
+        'css:button[title*="Next"]',
+        'css:button[title*="next"]',
+    ]
+    
+    # 日期单元格选择器
+    DATE_CELL_SELECTORS = [
+        # Element Plus 特定选择器
+        'css:.el-date-table td',
+        'css:.el-date-table__cell',
+        'css:.el-picker-panel__content td',
+        'css:td.available',
+        'css:td[class*="available"]',
+        # 通用选择器
+        'css:button',
+        'css:[role="gridcell"]',
+        'css:td',
+        'css:.day',
+        'css:[class*="day"]',
+        'css:[class*="date"]',
+    ]
+    
+    # 日期输入框选择器
+    DATE_INPUT_SELECTORS = [
+        'css:button[data-testid="uicl-date-input"]',
+        'css:input[type="date"]',
+        'css:input[data-testid*="date"]',
+        'css:[data-testid*="date-input"]',
+        'css:.date-input',
+        'css:[class*="date-picker"] input',
+        'css:[class*="datepicker"] input',
+    ]
+    
+    def __init__(self, console: Console = None):
+        self.console = console or Console()
+        self._vision_handler = None  # 视觉 RPA 处理器，由外部注入
+    
+    def set_vision_handler(self, handler):
+        """
+        设置视觉 RPA 处理器
+        
+        handler 应该是一个可调用对象，签名为:
+        handler(context, target_date: datetime, screenshot_path: str = None) -> bool
+        """
+        self._vision_handler = handler
+    
+    def select_date(
+        self,
+        context,  # iframe 或 page 对象
+        target_date: datetime,
+        strategies: list = None,
+        open_picker: bool = True,
+    ) -> DatePickerResult:
+        """
+        选择指定日期
+        
+        Args:
+            context: iframe 或 page 对象
+            target_date: 目标日期
+            strategies: 使用的策略列表，默认 ['element_click', 'js_input', 'vision_rpa']
+            open_picker: 是否先打开日期选择器
+            
+        Returns:
+            DatePickerResult: 选择结果
+        """
+        if strategies is None:
+            # Impact 页面目前优先用 JS 直接设置日期（更稳）。
+            # TODO: 后续补强 element_click：基于 Impact 自带日期控件 DOM 做跨月/跨年导航 + 精准点击。
+            strategies = ['js_input']
+        
+        target_day = str(target_date.day)
+        target_iso = target_date.strftime('%Y-%m-%d')
+        
+        last_error = None
+        
+        for strategy in strategies:
+            try:
+                if strategy == 'element_click':
+                    # TODO: Impact 自带日期控件的元素点击方案（含跨月/跨年导航）。
+                    logger.debug("TODO: element_click strategy is not enabled for Impact date picker yet.")
+                    continue
+                
+                elif strategy == 'js_input':
+                    success = self._select_by_js_input(context, target_date, target_iso)
+                    if success:
+                        return DatePickerResult(success=True, method='js_input')
+                
+                elif strategy == 'vision_rpa':
+                    success = self._select_by_vision_rpa(context, target_date)
+                    if success:
+                        return DatePickerResult(success=True, method='vision_rpa')
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"日期选择策略 {strategy} 失败: {e}")
+                continue
+        
+        return DatePickerResult(
+            success=False,
+            error=last_error or f"所有策略均失败，无法选择日期: {target_iso}"
+        )
+    
+    def _select_by_element_click(
+        self,
+        context,
+        target_date: datetime,
+        target_day: str,
+        target_iso: str,
+        open_picker: bool = True,
+    ) -> bool:
+        """通过元素点击方式选择日期"""
+        # 打开日期选择器
+        if open_picker:
+            if not self._open_date_picker(context):
+                return False
+        
+        # 计算月份差异
+        now = datetime.now()
+        months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
+        direction = 'next' if months_diff >= 0 else 'prev'
+        
+        # 尝试在当前视图或切换月份后找到目标日期
+        max_attempts = max(abs(months_diff) + 2, 3)
+        for step in range(max_attempts):
+            if step > 0:
+                if not self._click_month_nav(context, direction):
+                    if step == 1 and direction == 'next':
+                        if self._click_month_nav(context, 'prev'):
+                            if self._try_pick_date_in_view(context, target_day, target_iso):
+                                return True
+                    break
+            if self._try_pick_date_in_view(context, target_day, target_iso):
+                return True
+        
+        logger.warning(f"元素点击方式未找到目标日期: {target_iso}")
+        return False
+    
+    def _select_by_js_input(self, context, target_date: datetime, target_iso: str) -> bool:
+        """通过 JS 直接设置输入框值的方式选择日期"""
+        # 尝试多种日期格式
+        date_formats = [
+            target_iso,  # 2026-01-05
+            target_date.strftime('%m/%d/%Y'),  # 01/05/2026
+            target_date.strftime('%d/%m/%Y'),  # 05/01/2026
+            target_date.strftime('%Y/%m/%d'),  # 2026/01/05
+        ]
+        
+        def _set_value_with_events(ele, value: str) -> bool:
+            """在元素或其内部 input 上设置值，并触发 input/change 事件（尽量兼容受控组件）。"""
+            try:
+                # 在 ChromiumElement 上运行 JS，this 指向该元素
+                ok = ele.run_js(
+                    """
+                    (function(v){
+                        const root = this;
+                        const isInput = root && (root.tagName === 'INPUT' || root.tagName === 'TEXTAREA');
+                        const input = isInput ? root : (root ? root.querySelector('input,textarea') : null);
+                        if (!input) return false;
+                        try { input.focus(); } catch(e) {}
+
+                        const proto = Object.getPrototypeOf(input);
+                        const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+                                  || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+                                  || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+                        const setter = desc && desc.set;
+                        if (setter) setter.call(input, v);
+                        else input.value = v;
+
+                        try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch(e) {}
+                        try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
+                        return true;
+                    })(arguments[0]);
+                    """,
+                    value,
+                )
+                return bool(ok)
+            except Exception:
+                return False
+
+        # 查找日期输入框/按钮
+        for selector in self.DATE_INPUT_SELECTORS:
+            try:
+                input_ele = context.ele(selector, timeout=0.5)
+                if input_ele:
+                    for date_str in date_formats:
+                        try:
+                            if not _set_value_with_events(input_ele, date_str):
+                                raise Exception("set_value_with_events returned false")
+                            logger.info(f"已通过 JS 设置日期: {date_str}")
+                            time.sleep(0.3)
+                            return True
+                        except Exception as e:
+                            logger.debug(f"JS 设置日期失败 ({date_str}): {e}")
+                            continue
+            except Exception:
+                continue
+        
+        # 尝试查找隐藏的 input[type="date"]
+        try:
+            hidden_inputs = context.eles('css:input[type="hidden"], input[type="date"]')
+            for inp in hidden_inputs or []:
+                try:
+                    name = (inp.attr('name') or '').lower()
+                    data_testid = (inp.attr('data-testid') or '').lower()
+                    if 'date' in name or 'date' in data_testid:
+                        if not _set_value_with_events(inp, target_iso):
+                            continue
+                        logger.info(f"已通过 JS 设置隐藏日期输入框: {target_iso}")
+                        time.sleep(0.3)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
+        logger.warning("JS 输入方式未找到可用的日期输入框")
+        return False
+    
+    def _select_by_vision_rpa(self, context, target_date: datetime) -> bool:
+        """通过视觉 RPA 方式选择日期"""
+        if not self._vision_handler:
+            logger.debug("未设置视觉 RPA 处理器，跳过此策略")
+            return False
+        
+        try:
+            # 截取当前页面截图
+            screenshot_path = None
+            try:
+                screenshot_path = context.get_screenshot(
+                    path=os.path.join(os.path.dirname(__file__), 'logs', 'screenshots'),
+                    name=f"date_picker_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                )
+            except Exception as e:
+                logger.warning(f"截图失败: {e}")
+            
+            # 调用视觉处理器
+            result = self._vision_handler(context, target_date, screenshot_path)
+            if result:
+                logger.info(f"已通过视觉 RPA 选择日期: {target_date.strftime('%Y-%m-%d')}")
+                return True
+        except Exception as e:
+            logger.warning(f"视觉 RPA 选择日期失败: {e}")
+        
+        return False
+    
+    def _open_date_picker(self, context) -> bool:
+        """打开日期选择器"""
+        for selector in self.DATE_INPUT_SELECTORS:
+            try:
+                btn = context.ele(selector, timeout=0.5)
+                if btn:
+                    try:
+                        btn.wait.clickable()
+                    except Exception:
+                        pass
+                    btn.click(by_js=None)
+                    logger.info("已打开日期选择器")
+                    time.sleep(0.5)
+                    return True
+            except Exception:
+                continue
+        
+        logger.warning("未找到日期选择器按钮")
+        return False
+    
+    def _is_disabled(self, ele) -> bool:
+        """检查元素是否为禁用状态"""
+        try:
+            aria_disabled = (ele.attr('aria-disabled') or '').strip().lower()
+            if aria_disabled == 'true':
+                return True
+        except Exception:
+            pass
+        
+        try:
+            cls = (ele.attr('class') or '').lower()
+            # Element Plus 特定：检查是否是可用的日期单元格
+            # Element Plus 使用 'available' 类标记可用日期，'disabled' 标记禁用
+            # 相邻月份的日期通常没有 'available' 类
+            if 'el-date-table__cell' in cls:
+                if 'available' not in cls and 'today' not in cls:
+                    return True  # 不是可用日期
+            
+            # 通用禁用关键词检查
+            disabled_keywords = [k for k in self.DISABLED_KEYWORDS if k not in ('today', 'current')]
+            if any(k in cls for k in disabled_keywords):
+                return True
+            # 单独检查 "new" 以避免误匹配 "renew" 等词
+            if ' new ' in f' {cls} ' or cls.startswith('new ') or cls.endswith(' new') or cls == 'new':
+                return True
+        except Exception:
+            pass
+        
+        try:
+            if ele.attr('disabled') is not None:
+                return True
+        except Exception:
+            pass
+        
+        try:
+            for attr_name in ('data-outside', 'data-other-month', 'data-adjacent'):
+                val = ele.attr(attr_name)
+                if val and val.lower() in ('true', '1', 'yes'):
+                    return True
+        except Exception:
+            pass
+        
+        return False
+    
+    def _try_pick_date_in_view(self, context, target_day: str, target_iso: str) -> bool:
+        """尝试在当前视图中选择目标日期"""
+        date_cells = []
+        # 尝试所有选择器
+        for selector in self.DATE_CELL_SELECTORS:
+            try:
+                cells = context.eles(selector)
+                if cells:
+                    date_cells.extend(cells)
+            except Exception:
+                continue
+        
+        if not date_cells:
+            return False
+        
+        # 优先通过属性匹配完整日期
+        for cell in date_cells or []:
+            try:
+                if self._is_disabled(cell):
+                    continue
+                attrs = []
+                for k in ('data-date', 'data-day', 'aria-label', 'title', 'data-testid'):
+                    try:
+                        v = cell.attr(k)
+                        if v:
+                            attrs.append(str(v))
+                    except Exception:
+                        continue
+                attrs_text = ' '.join(attrs)
+                if target_iso in attrs_text or target_iso.replace('-', '/') in attrs_text:
+                    try:
+                        cell.wait.clickable()
+                    except Exception:
+                        pass
+                    cell.click(by_js=None)
+                    logger.info(f"已选择日期: {target_iso}")
+                    time.sleep(0.3)
+                    return True
+            except Exception:
+                continue
+        
+        # 兜底：按日历格子的文本点击
+        for cell in date_cells or []:
+            try:
+                if self._is_disabled(cell):
+                    continue
+                if (cell.text or '').strip() != target_day:
+                    continue
+                try:
+                    cell.wait.clickable()
+                except Exception:
+                    pass
+                cell.click(by_js=None)
+                logger.info(f"已选择日期: {target_iso}")
+                time.sleep(0.3)
+                return True
+            except Exception:
+                continue
+        
+        return False
+    
+    def _click_month_nav(self, context, direction: str) -> bool:
+        """点击月份导航按钮"""
+        selectors = self.PREV_MONTH_SELECTORS if direction == 'prev' else self.NEXT_MONTH_SELECTORS
+        
+        for sel in selectors:
+            try:
+                btn = context.ele(sel, timeout=0.3)
+                if btn:
+                    try:
+                        btn.click(by_js=True)
+                        time.sleep(0.4)
+                        logger.debug(f"成功点击月份切换按钮: {sel}")
+                        return True
+                    except Exception as e:
+                        logger.debug(f"点击月份按钮失败 ({sel}): {e}")
+                        continue
+            except Exception:
+                continue
+        
+        # 兜底：通过箭头字符查找
+        try:
+            header_btns = context.eles('css:button', timeout=0.5)
+            for btn in header_btns or []:
+                try:
+                    btn_text = (btn.text or '').strip()
+                    if len(btn_text) > 10:
+                        continue
+                    if direction == 'prev' and any(c in btn_text for c in ('←', '<', '‹', '«')):
+                        btn.click(by_js=True)
+                        time.sleep(0.4)
+                        return True
+                    elif direction == 'next' and any(c in btn_text for c in ('→', '>', '›', '»')):
+                        btn.click(by_js=True)
+                        time.sleep(0.4)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
+        logger.warning(f"未找到月份切换按钮 (direction={direction})")
+        return False
+
+
 class ProposalSender:
     """Proposal发送类，负责核心的RPA操作"""
     
@@ -580,6 +1133,47 @@ class ProposalSender:
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         self.config = config
+        
+        # 初始化日期选择器
+        self.date_picker = DatePicker(console)
+        
+        # 配置视觉 RPA 处理器（如果启用）
+        self._setup_vision_rpa(settings)
+    
+    def _setup_vision_rpa(self, settings: dict):
+        """配置视觉 RPA 处理器"""
+        vision_config = settings.get("vision_rpa", {})
+        if not vision_config.get("enabled"):
+            logger.debug("视觉 RPA 未启用")
+            return
+        
+        try:
+            from vision_rpa import VisionConfig, VisionDatePickerHandler
+            
+            # 优先使用配置文件中的设置，其次使用环境变量
+            config = VisionConfig(
+                api_key=vision_config.get("api_key") or os.getenv("VL_API_KEY") or os.getenv("OPENAI_API_KEY"),
+                base_url=vision_config.get("base_url") or os.getenv("VL_BASE_URL") or os.getenv("OPENAI_BASE_URL"),
+                model=vision_config.get("model", "gpt-4o"),
+                max_tokens=vision_config.get("max_tokens", 1024),
+                temperature=vision_config.get("temperature", 0.1),
+                timeout=vision_config.get("timeout", 30),
+                browser_ui_offset_x=vision_config.get("browser_ui_offset_x", 0),
+                browser_ui_offset_y=vision_config.get("browser_ui_offset_y", 0),
+            )
+            
+            if not config.api_key:
+                logger.warning("视觉 RPA 已启用但未配置 API Key")
+                return
+            
+            handler = VisionDatePickerHandler(config=config)
+            self.date_picker.set_vision_handler(handler)
+            logger.info(f"视觉 RPA 已启用，模型: {config.model}")
+            
+        except ImportError as e:
+            logger.warning(f"视觉 RPA 依赖未安装: {e}")
+        except Exception as e:
+            logger.error(f"配置视觉 RPA 失败: {e}")
     
     def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> int:
         """
@@ -1087,145 +1681,37 @@ class ProposalSender:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
     
-    def _select_tomorrow_date(self, iframe) -> bool:
-        """选择明天的日期"""
+    def _select_tomorrow_date(self, iframe, strategies: list = None) -> bool:
+        """
+        选择明天的日期
+        
+        Args:
+            iframe: iframe 对象
+            strategies: 使用的策略列表，默认 ['element_click', 'js_input', 'vision_rpa']
+            
+        Returns:
+            bool: 是否成功
+        """
         try:
-            date_btn = iframe.ele('css:button[data-testid="uicl-date-input"]', timeout=3)
-            if date_btn:
-                try:
-                    date_btn.wait.clickable()
-                except Exception:
-                    pass
-                date_btn.click(by_js=None)
-                logger.info("已打开日期选择器")
-                time.sleep(0.5)
-
-                target_date = datetime.now() + timedelta(days=1)
-                target_day = str(target_date.day)
-                target_iso = target_date.strftime('%Y-%m-%d')
-
-                def _is_disabled(ele) -> bool:
-                    try:
-                        aria_disabled = (ele.attr('aria-disabled') or '').strip().lower()
-                        if aria_disabled == 'true':
-                            return True
-                    except Exception:
-                        pass
-                    try:
-                        cls = (ele.attr('class') or '').lower()
-                        if any(k in cls for k in ('disabled', 'inactive', 'outside', 'other', 'old', 'new', 'muted')):
-                            return True
-                    except Exception:
-                        pass
-                    try:
-                        if ele.attr('disabled') is not None:
-                            return True
-                    except Exception:
-                        pass
-                    return False
-
-                def try_pick_target_in_view() -> bool:
-                    selectors = 'css:button, [role="gridcell"], td, .day, [class*="day"], [class*="date"]'
-                    date_cells = iframe.eles(selectors)
-
-                    # 优先通过属性匹配完整日期，避免跨月时误点同名日期
-                    for cell in date_cells:
-                        try:
-                            if _is_disabled(cell):
-                                continue
-                            attrs = []
-                            for k in ('data-date', 'data-day', 'aria-label', 'title', 'data-testid'):
-                                try:
-                                    v = cell.attr(k)
-                                    if v:
-                                        attrs.append(str(v))
-                                except Exception:
-                                    continue
-                            attrs_text = ' '.join(attrs)
-                            if target_iso in attrs_text or target_iso.replace('-', '/') in attrs_text:
-                                try:
-                                    cell.wait.clickable()
-                                except Exception:
-                                    pass
-                                cell.click(by_js=None)
-                                logger.info(f"已选择日期: {target_iso}")
-                                time.sleep(0.3)
-                                return True
-                        except Exception:
-                            continue
-
-                    # 兜底：按日历格子的文本点击（已尽量过滤 disabled/outside-month）
-                    for cell in date_cells:
-                        try:
-                            if _is_disabled(cell):
-                                continue
-                            if (cell.text or '').strip() != target_day:
-                                continue
-                            try:
-                                cell.wait.clickable()
-                            except Exception:
-                                pass
-                            cell.click(by_js=None)
-                            logger.info(f"已选择日期: {target_iso}")
-                            time.sleep(0.3)
-                            return True
-                        except Exception:
-                            continue
-
-                    return False
-
-                def click_month(direction: str) -> bool:
-                    if direction == 'prev':
-                        selectors = [
-                            'css:button[aria-label="Previous"]',
-                            'css:button[aria-label*="Previous"]',
-                            'css:button[aria-label*="Prev"]',
-                            'css:[data-testid*="prev"]',
-                            'css:.prev',
-                            'css:[class*="prev"]',
-                            'css:[class*="chevron-left"]',
-                        ]
-                    else:
-                        selectors = [
-                            'css:button[aria-label="Next"]',
-                            'css:button[aria-label*="Next"]',
-                            'css:button[aria-label*="Next month"]',
-                            'css:[data-testid*="next"]',
-                            'css:.next',
-                            'css:[class*="next"]',
-                            'css:[class*="chevron-right"]',
-                        ]
-
-                    for sel in selectors:
-                        btn = iframe.ele(sel, timeout=0.5)
-                        if btn:
-                            try:
-                                btn.click(by_js=True)
-                                time.sleep(0.4)
-                                return True
-                            except Exception:
-                                continue
-                    return False
-
-                now = datetime.now()
-                months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
-                direction = 'next' if months_diff >= 0 else 'prev'
-
-                for step in range(abs(months_diff) + 1):
-                    if step > 0 and not click_month(direction):
-                        break
-                    if try_pick_target_in_view():
-                        return True
-
-                logger.warning(f"未找到目标日期: {target_iso}（可能需要检查日期控件结构）")
-                return False
+            if strategies is None:
+                # TODO: 后续补强 element_click；当前默认用 JS 直接设置日期。
+                strategies = ['js_input']
+            target_date = datetime.now() + timedelta(days=1)
+            result = self.date_picker.select_date(
+                context=iframe,
+                target_date=target_date,
+                strategies=strategies,
+                open_picker=True,
+            )
+            
+            if result.success:
+                logger.info(f"日期选择成功，使用方法: {result.method}")
+                return True
             else:
-                logger.warning("未找到日期输入按钮")
-                logger.warning("未找到日期输入按钮")
+                logger.warning(f"日期选择失败: {result.error}")
                 return False
                 
         except Exception as e:
-            logger.error(f"选择日期失败: {e}")
             logger.error(f"选择日期失败: {e}")
         return False
     
