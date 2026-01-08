@@ -1208,9 +1208,14 @@ class ProposalSender:
         pending_batch_buttons = 0
         total_detected_buttons = 0
         
-        self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个)...[/bold cyan]")
+        # 根据目标数量动态调整最大滚动次数（至少为目标数量的3倍，但不超过固定上限）
+        # 这样可以确保有足够的滚动次数来找到目标数量的按钮
+        effective_max_scrolls = min(max(max_count * 3, 200), self.max_scrolls * 5)
         
-        while total_scrolls < self.max_scrolls:
+        self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]")
+        
+        # 循环条件：未达到目标数量 且 未超过最大滚动次数（安全限制）
+        while clicked_count < max_count and total_scrolls < effective_max_scrolls:
             # 检查是否需要重连
             if consecutive_errors >= self.max_consecutive_errors:
                 self.console.print("[yellow]连续多次错误，尝试重新连接浏览器...[/yellow]")
@@ -1327,17 +1332,26 @@ class ProposalSender:
                                     if not clicked:
                                         raise Exception("点击按钮失败")
                                     
-                                    clicked_count += 1
-                                    logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
-                                    self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                    # 先处理弹窗，只有成功时才标记按钮和增加计数
                                     time.sleep(0.5)
-                                    self._mark_button_state(btn, self.clicked_attr)
-                                    if pending_batch_buttons > 0:
-                                        pending_batch_buttons = max(pending_batch_buttons - 1, 0)
-                                    if pending_batch_buttons == 0:
-                                        should_scroll_after_batch = True
+                                    modal_success = self._handle_proposal_modal(selected_tab, template_content)
                                     
-                                    self._handle_proposal_modal(selected_tab, template_content)
+                                    if modal_success:
+                                        # 弹窗处理成功，增加计数并标记按钮
+                                        clicked_count += 1
+                                        logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
+                                        self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                        self._mark_button_state(btn, self.clicked_attr)
+                                        if pending_batch_buttons > 0:
+                                            pending_batch_buttons = max(pending_batch_buttons - 1, 0)
+                                        if pending_batch_buttons == 0:
+                                            should_scroll_after_batch = True
+                                    else:
+                                        # 弹窗处理失败，记录警告但不标记按钮
+                                        logger.warning(f"弹窗处理失败，跳过此按钮 (类别: {selected_tab})")
+                                        self.console.print(f"[yellow]⚠ 弹窗处理失败，跳过此按钮 (类别: {selected_tab})[/yellow]")
+                                        # 不增加计数，不标记按钮，继续处理下一个按钮
+                                    
                                     break
                                 except Exception as e:
                                     error_msg = str(e).lower()
@@ -1427,7 +1441,7 @@ class ProposalSender:
         try:
             iframe = self._wait_for_modal_iframe()
             if not iframe:
-                logger.warning("未找到弹窗 iframe")
+                logger.warning(f"未找到弹窗 iframe (类别: {selected_tab or '未知'})，可能弹窗加载超时")
                 return False
             
             ok = self._select_template_term(iframe, self.template_term)
@@ -1820,15 +1834,20 @@ class ProposalSender:
     def _wait_for_modal_iframe(self):
         """等待 Proposal 弹窗 iframe 出现"""
         deadline = time.time() + self.modal_wait_timeout
+        start_time = time.time()
         while time.time() < deadline:
             iframe = self.browser.find_element(
                 'css:iframe[data-testid="uicl-modal-iframe-content"]',
                 timeout=0.5
             )
             if iframe:
+                elapsed = time.time() - start_time
+                if elapsed > 2.0:  # 如果等待超过2秒，记录日志
+                    logger.debug(f"弹窗 iframe 出现（等待了 {elapsed:.2f} 秒）")
                 return iframe
             time.sleep(self.modal_poll_interval)
-        logger.warning("等待 Proposal 弹窗超时")
+        elapsed = time.time() - start_time
+        logger.warning(f"等待 Proposal 弹窗超时（等待了 {elapsed:.2f} 秒，超时设置: {self.modal_wait_timeout} 秒）")
         return None
 
     def _mark_button_state(self, button, attr: str, value: str = "true") -> bool:
