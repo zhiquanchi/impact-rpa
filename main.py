@@ -10,8 +10,6 @@ import questionary
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.syntax import Syntax
-from rich import print as rprint
 import pyperclip
 from exception_handler import exception_handler
 import inspect
@@ -20,7 +18,7 @@ import inspect
 class ConfigManager:
     """配置管理类，负责处理所有配置文件的读写"""
     
-    def __init__(self, base_dir: str = None):
+    def __init__(self, base_dir: str | None = None):
         self.base_dir = base_dir or os.path.dirname(__file__)
         self.config_dir = os.path.join(self.base_dir, 'config')
         self.log_dir = os.path.join(self.base_dir, 'logs')
@@ -34,6 +32,8 @@ class ConfigManager:
             "scroll_delay": 1.0,
             "click_delay": 0.5,
             "modal_wait": 20.0,
+            # 开发测试模式：不会真正点击 Send Proposal 按钮，仅模拟流程
+            "dry_run": False,
             # Proposal 弹窗内的 Template Term 下拉默认选择项
             # 例如："Commission Tier Terms" / "Public Terms" / "Ulanzi Terms"
             "template_term": "Commission Tier Terms",
@@ -149,7 +149,7 @@ class TemplateManager:
             logger.error(f"加载模板失败: {e}")
         return ""
     
-    def get_active_template_info(self) -> dict:
+    def get_active_template_info(self) -> dict | None:
         """获取当前激活的模板完整信息"""
         data = self.load_all()
         active_id = data.get('active_template_id')
@@ -158,7 +158,7 @@ class TemplateManager:
                 return tpl
         return None
     
-    def get_next_id(self, data: dict = None) -> int:
+    def get_next_id(self, data: dict | None = None) -> int:
         """获取下一个可用的模板ID"""
         if data is None:
             data = self.load_all()
@@ -184,7 +184,7 @@ class TemplateManager:
             logger.error(f"添加模板失败: {e}")
             return False
     
-    def update_template(self, template_id: int, name: str = None, content: str = None) -> bool:
+    def update_template(self, template_id: int, name: str | None = None, content: str | None = None) -> bool:
         """更新模板"""
         try:
             data = self.load_all()
@@ -277,7 +277,8 @@ class BrowserManager:
             
             # 方式2: 尝试连接已存在的浏览器（不启动新实例）
             try:
-                self.browser = Chromium(addr_or_opts=None)  # 不指定地址，尝试连接现有浏览器
+                # 某些 DrissionPage 版本不接受 None，这里直接使用默认构造尝试连接现有实例
+                self.browser = Chromium()
                 self.tab = self.browser.latest_tab
                 if self.tab:
                     logger.info("浏览器连接成功（连接现有浏览器）")
@@ -439,7 +440,7 @@ class BrowserManager:
                 info["element_error"] = str(e)
         return info
     
-    def find_element(self, locator: str, timeout: int = 3, parent=None):
+    def find_element(self, locator: str, timeout: float = 3.0, parent=None):
         """安全地查找元素"""
         target = parent if parent else self.tab
         try:
@@ -482,7 +483,7 @@ class BrowserManager:
                 return None
             raise
     
-    def find_elements(self, locator: str, timeout: int = 3, parent=None) -> list:
+    def find_elements(self, locator: str, timeout: float = 3.0, parent=None) -> list:
         """安全地查找多个元素"""
         target = parent if parent else self.tab
         try:
@@ -541,7 +542,7 @@ class BrowserManager:
                     time.sleep(0.3)
                     element.click(by_js=True)
                     return True
-                except:
+                except Exception:
                     pass
             
             logger.warning(f"点击元素失败: {e}")
@@ -622,9 +623,9 @@ class BrowserManager:
 class DatePickerResult:
     """日期选择结果"""
     
-    def __init__(self, success: bool, method: str = None, error: str = None):
+    def __init__(self, success: bool, method: str | None = None, error: str | None = None):
         self.success = success
-        self.method = method  # 'element_click', 'js_input', 'vision_rpa'
+        self.method = method  # 'element_click' | 'vision_rpa'
         self.error = error
 
 
@@ -632,14 +633,24 @@ class DatePicker:
     """
     日期选择器类，支持多种选择策略：
     1. 元素点击方式 (element_click)
-    2. JS 输入方式 (js_input)
-    3. 视觉 RPA 方式 (vision_rpa) - 需要外部实现
+    2. 视觉 RPA 方式 (vision_rpa) - 需要外部实现
     """
+    # 日期触发器/输入框选择器（用于“打开日期选择器”）
+    # 注意：这里不做 JS 写值，仅用于点击打开弹层
+    DATE_INPUT_SELECTORS = [
+        'css:button[data-testid="uicl-date-input"]',
+        'css:input[type="date"]',
+        'css:input[data-testid*="date"]',
+        'css:[data-testid*="date-input"]',
+        'css:.date-input',
+        'css:[class*="date-picker"] input',
+        'css:[class*="datepicker"] input',
+    ]
     
-    # 禁用状态的类名关键词
+    # 禁用状态的类名关键词（尽量通用；站点/组件不同会有差异）
     DISABLED_KEYWORDS = (
-        # Element Plus 特定
-        'disabled', 'today', 'current',  # Element Plus 使用 'today' 标记今天，但其他日期可能用不同标记
+        # 通用
+        'disabled', 'today', 'current',
         # 通用
         'inactive', 'outside', 'other', 'old', 'muted',
         'adjacent', 'faded', 'dim', 'grey', 'gray', 'secondary',
@@ -649,14 +660,6 @@ class DatePicker:
     
     # 月份切换按钮选择器
     PREV_MONTH_SELECTORS = [
-        # Element Plus 特定选择器
-        'css:.el-picker-panel__icon-btn.el-icon-arrow-left',
-        'css:.el-date-picker__header-btn.el-icon-arrow-left',
-        'css:button.el-picker-panel__icon-btn:first-child',
-        'css:.el-picker-panel__icon-btn[class*="arrow-left"]',
-        'css:.el-date-picker__header-btn[class*="arrow-left"]',
-        'css:i.el-icon-arrow-left',
-        'css:.el-icon-arrow-left',
         # 通用选择器
         'css:button[aria-label="Previous"]',
         'css:button[aria-label*="Previous"]',
@@ -679,14 +682,6 @@ class DatePicker:
     ]
     
     NEXT_MONTH_SELECTORS = [
-        # Element Plus 特定选择器
-        'css:.el-picker-panel__icon-btn.el-icon-arrow-right',
-        'css:.el-date-picker__header-btn.el-icon-arrow-right',
-        'css:button.el-picker-panel__icon-btn:last-child',
-        'css:.el-picker-panel__icon-btn[class*="arrow-right"]',
-        'css:.el-date-picker__header-btn[class*="arrow-right"]',
-        'css:i.el-icon-arrow-right',
-        'css:.el-icon-arrow-right',
         # 通用选择器
         'css:button[aria-label="Next"]',
         'css:button[aria-label*="Next"]',
@@ -708,12 +703,6 @@ class DatePicker:
     
     # 日期单元格选择器
     DATE_CELL_SELECTORS = [
-        # Element Plus 特定选择器
-        'css:.el-date-table td',
-        'css:.el-date-table__cell',
-        'css:.el-picker-panel__content td',
-        'css:td.available',
-        'css:td[class*="available"]',
         # 通用选择器
         'css:button',
         'css:[role="gridcell"]',
@@ -723,18 +712,7 @@ class DatePicker:
         'css:[class*="date"]',
     ]
     
-    # 日期输入框选择器
-    DATE_INPUT_SELECTORS = [
-        'css:button[data-testid="uicl-date-input"]',
-        'css:input[type="date"]',
-        'css:input[data-testid*="date"]',
-        'css:[data-testid*="date-input"]',
-        'css:.date-input',
-        'css:[class*="date-picker"] input',
-        'css:[class*="datepicker"] input',
-    ]
-    
-    def __init__(self, console: Console = None):
+    def __init__(self, console: Console | None = None):
         self.console = console or Console()
         self._vision_handler = None  # 视觉 RPA 处理器，由外部注入
     
@@ -751,7 +729,7 @@ class DatePicker:
         self,
         context,  # iframe 或 page 对象
         target_date: datetime,
-        strategies: list = None,
+        strategies: list | None = None,
         open_picker: bool = True,
     ) -> DatePickerResult:
         """
@@ -760,16 +738,15 @@ class DatePicker:
         Args:
             context: iframe 或 page 对象
             target_date: 目标日期
-            strategies: 使用的策略列表，默认 ['element_click', 'js_input', 'vision_rpa']
+            strategies: 使用的策略列表，默认 ['element_click', 'vision_rpa']
             open_picker: 是否先打开日期选择器
             
         Returns:
             DatePickerResult: 选择结果
         """
         if strategies is None:
-            # Impact 页面目前优先用 JS 直接设置日期（更稳）。
-            # TODO: 后续补强 element_click：基于 Impact 自带日期控件 DOM 做跨月/跨年导航 + 精准点击。
-            strategies = ['js_input']
+            # Impact：只使用真实点击（element_click）；必要时可启用 vision_rpa 兜底
+            strategies = ['element_click']
         
         target_day = str(target_date.day)
         target_iso = target_date.strftime('%Y-%m-%d')
@@ -779,14 +756,15 @@ class DatePicker:
         for strategy in strategies:
             try:
                 if strategy == 'element_click':
-                    # TODO: Impact 自带日期控件的元素点击方案（含跨月/跨年导航）。
-                    logger.debug("TODO: element_click strategy is not enabled for Impact date picker yet.")
-                    continue
-                
-                elif strategy == 'js_input':
-                    success = self._select_by_js_input(context, target_date, target_iso)
+                    success = self._select_by_element_click(
+                        context=context,
+                        target_date=target_date,
+                        target_day=target_day,
+                        target_iso=target_iso,
+                        open_picker=open_picker,
+                    )
                     if success:
-                        return DatePickerResult(success=True, method='js_input')
+                        return DatePickerResult(success=True, method='element_click')
                 
                 elif strategy == 'vision_rpa':
                     success = self._select_by_vision_rpa(context, target_date)
@@ -836,87 +814,6 @@ class DatePicker:
                 return True
         
         logger.warning(f"元素点击方式未找到目标日期: {target_iso}")
-        return False
-    
-    def _select_by_js_input(self, context, target_date: datetime, target_iso: str) -> bool:
-        """通过 JS 直接设置输入框值的方式选择日期"""
-        # 尝试多种日期格式
-        date_formats = [
-            target_iso,  # 2026-01-05
-            target_date.strftime('%m/%d/%Y'),  # 01/05/2026
-            target_date.strftime('%d/%m/%Y'),  # 05/01/2026
-            target_date.strftime('%Y/%m/%d'),  # 2026/01/05
-        ]
-        
-        def _set_value_with_events(ele, value: str) -> bool:
-            """在元素或其内部 input 上设置值，并触发 input/change 事件（尽量兼容受控组件）。"""
-            try:
-                # 在 ChromiumElement 上运行 JS，this 指向该元素
-                ok = ele.run_js(
-                    """
-                    (function(v){
-                        const root = this;
-                        const isInput = root && (root.tagName === 'INPUT' || root.tagName === 'TEXTAREA');
-                        const input = isInput ? root : (root ? root.querySelector('input,textarea') : null);
-                        if (!input) return false;
-                        try { input.focus(); } catch(e) {}
-
-                        const proto = Object.getPrototypeOf(input);
-                        const desc = Object.getOwnPropertyDescriptor(proto, 'value')
-                                  || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
-                                  || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
-                        const setter = desc && desc.set;
-                        if (setter) setter.call(input, v);
-                        else input.value = v;
-
-                        try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch(e) {}
-                        try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
-                        return true;
-                    })(arguments[0]);
-                    """,
-                    value,
-                )
-                return bool(ok)
-            except Exception:
-                return False
-
-        # 查找日期输入框/按钮
-        for selector in self.DATE_INPUT_SELECTORS:
-            try:
-                input_ele = context.ele(selector, timeout=0.5)
-                if input_ele:
-                    for date_str in date_formats:
-                        try:
-                            if not _set_value_with_events(input_ele, date_str):
-                                raise Exception("set_value_with_events returned false")
-                            logger.info(f"已通过 JS 设置日期: {date_str}")
-                            time.sleep(0.3)
-                            return True
-                        except Exception as e:
-                            logger.debug(f"JS 设置日期失败 ({date_str}): {e}")
-                            continue
-            except Exception:
-                continue
-        
-        # 尝试查找隐藏的 input[type="date"]
-        try:
-            hidden_inputs = context.eles('css:input[type="hidden"], input[type="date"]')
-            for inp in hidden_inputs or []:
-                try:
-                    name = (inp.attr('name') or '').lower()
-                    data_testid = (inp.attr('data-testid') or '').lower()
-                    if 'date' in name or 'date' in data_testid:
-                        if not _set_value_with_events(inp, target_iso):
-                            continue
-                        logger.info(f"已通过 JS 设置隐藏日期输入框: {target_iso}")
-                        time.sleep(0.3)
-                        return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        
-        logger.warning("JS 输入方式未找到可用的日期输入框")
         return False
     
     def _select_by_vision_rpa(self, context, target_date: datetime) -> bool:
@@ -977,13 +874,6 @@ class DatePicker:
         
         try:
             cls = (ele.attr('class') or '').lower()
-            # Element Plus 特定：检查是否是可用的日期单元格
-            # Element Plus 使用 'available' 类标记可用日期，'disabled' 标记禁用
-            # 相邻月份的日期通常没有 'available' 类
-            if 'el-date-table__cell' in cls:
-                if 'available' not in cls and 'today' not in cls:
-                    return True  # 不是可用日期
-            
             # 通用禁用关键词检查
             disabled_keywords = [k for k in self.DISABLED_KEYWORDS if k not in ('today', 'current')]
             if any(k in cls for k in disabled_keywords):
@@ -1132,6 +1022,9 @@ class ProposalSender:
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
+        # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
+        # 可以通过检查页面上是否有已发送的标记、按钮状态变化、或DOM结构变化来判断
+        self.dry_run = bool(settings.get("dry_run", False))
         self.config = config
         
         # 初始化日期选择器
@@ -1152,8 +1045,8 @@ class ProposalSender:
             
             # 优先使用配置文件中的设置，其次使用环境变量
             config = VisionConfig(
-                api_key=vision_config.get("api_key") or os.getenv("VL_API_KEY") or os.getenv("OPENAI_API_KEY"),
-                base_url=vision_config.get("base_url") or os.getenv("VL_BASE_URL") or os.getenv("OPENAI_BASE_URL"),
+                api_key=vision_config.get("api_key") or os.getenv("VL_API_KEY") or os.getenv("OPENAI_API_KEY") or "",
+                base_url=vision_config.get("base_url") or os.getenv("VL_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "",
                 model=vision_config.get("model", "gpt-4o"),
                 max_tokens=vision_config.get("max_tokens", 1024),
                 temperature=vision_config.get("temperature", 0.1),
@@ -1211,6 +1104,16 @@ class ProposalSender:
         # 根据目标数量动态调整最大滚动次数（至少为目标数量的3倍，但不超过固定上限）
         # 这样可以确保有足够的滚动次数来找到目标数量的按钮
         effective_max_scrolls = min(max(max_count * 3, 200), self.max_scrolls * 5)
+        
+        if self.dry_run:
+            self.console.print(Panel(
+                "[bold yellow]⚠️  开发测试模式 (DRY-RUN)[/bold yellow]\n"
+                "不会真正点击 Send Proposal 按钮，仅模拟流程\n"
+                "如需正式运行，请在 config/settings.json 中设置 \"dry_run\": false",
+                title="[yellow]测试模式[/yellow]",
+                border_style="yellow"
+            ))
+            logger.info("[DRY-RUN] 开发测试模式已启用，不会真正点击按钮")
         
         self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]")
         
@@ -1314,6 +1217,18 @@ class ProposalSender:
                                     parent.hover()
                                     time.sleep(0.3)
                                     
+                                    # 开发测试模式：不实际点击按钮
+                                    if self.dry_run:
+                                        clicked_count += 1
+                                        logger.info(f"[DRY-RUN] [{clicked_count}/{max_count}] 模拟点击 Send Proposal 按钮 (类别: {selected_tab})")
+                                        self.console.print(f"[cyan]⚡ [DRY-RUN] [{clicked_count}/{max_count}][/cyan] 模拟点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                        self._mark_button_state(btn, self.clicked_attr)
+                                        if pending_batch_buttons > 0:
+                                            pending_batch_buttons = max(pending_batch_buttons - 1, 0)
+                                        if pending_batch_buttons == 0:
+                                            should_scroll_after_batch = True
+                                        break
+                                    
                                     clicked = False
                                     try:
                                         btn.click(by_js=True)
@@ -1367,7 +1282,7 @@ class ProposalSender:
                         error_msg = str(e).lower()
                         if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg or 'no such' in error_msg:
                             logger.warning(f"页面可能已刷新: {e}")
-                            self.console.print(f"[yellow]⚠ 页面可能已刷新，尝试重连...[/yellow]")
+                            self.console.print("[yellow]⚠ 页面可能已刷新，尝试重连...[/yellow]")
                             consecutive_errors += 1
                             break
                         else:
@@ -1415,7 +1330,7 @@ class ProposalSender:
         self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
         return clicked_count
     
-    def _get_selected_tab_value(self, btn) -> str:
+    def _get_selected_tab_value(self, btn) -> str | None:
         """获取按钮所在行的 selected-tab 值"""
         try:
             parent = btn.parent()
@@ -1436,7 +1351,7 @@ class ProposalSender:
             logger.error(f"获取 selected-tab 失败: {e}")
         return None
     
-    def _handle_proposal_modal(self, selected_tab: str = None, template_content: str = "") -> bool:
+    def _handle_proposal_modal(self, selected_tab: str | None = None, template_content: str = "") -> bool:
         """处理 Proposal 弹窗"""
         try:
             iframe = self._wait_for_modal_iframe()
@@ -1695,22 +1610,23 @@ class ProposalSender:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
     
-    def _select_tomorrow_date(self, iframe, strategies: list = None) -> bool:
+    def _select_tomorrow_date(self, iframe, strategies: list | None = None) -> bool:
         """
         选择明天的日期
         
         Args:
             iframe: iframe 对象
-            strategies: 使用的策略列表，默认 ['element_click', 'js_input', 'vision_rpa']
+            strategies: 使用的策略列表，默认 ['element_click', 'vision_rpa']
             
         Returns:
             bool: 是否成功
         """
         try:
-            if strategies is None:
-                # TODO: 后续补强 element_click；当前默认用 JS 直接设置日期。
-                strategies = ['js_input']
             target_date = datetime.now() + timedelta(days=1)
+            if strategies is None:
+                # 主流程只使用真实点击（element_click）。
+                # 当今天是月末时，明天会自动变成下个月 1 号，由 element_click 负责跨月导航并点击。
+                strategies = ['element_click']
             result = self.date_picker.select_date(
                 context=iframe,
                 target_date=target_date,
@@ -1875,7 +1791,7 @@ class MenuUI:
         self.template_manager = template_manager
         self.console = console
     
-    def show_main_menu(self) -> str:
+    def show_main_menu(self) -> str | None:
         """显示主菜单"""
         self.console.print(Panel.fit(
             "[bold cyan]Impact RPA - Send Proposal 自动化工具[/bold cyan]",
@@ -2032,7 +1948,7 @@ class MenuUI:
         activate = questionary.confirm("是否将此模板设为当前激活模板?", default=True).ask()
         
         if self.template_manager.add_template(name, content, activate):
-            self.console.print(f"[bold green]✓ 模板已保存[/bold green]")
+            self.console.print("[bold green]✓ 模板已保存[/bold green]")
         else:
             self.console.print("[bold red]✗ 保存失败[/bold red]")
     
@@ -2126,7 +2042,7 @@ class MenuUI:
         if self.template_manager.delete_template(selected_id):
             self.console.print(f"[bold green]✓ 模板 '{tpl_name}' 已删除[/bold green]")
     
-    def _get_multiline_input(self) -> str:
+    def _get_multiline_input(self) -> str | None:
         """获取多行输入"""
         choices = [
             questionary.Choice("📋 从剪贴板粘贴", value="clipboard"),
