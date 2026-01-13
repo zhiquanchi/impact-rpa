@@ -2,5 +2,20 @@
     "max_proposals": 10,
     "scroll_delay": 1.0,
     "click_delay": 0.5,
-    "modal_wait": 20.0
+    "modal_wait": 20.0,
+    "dry_run": true,
+    "template_term": "Commission Tier Terms",
+    "screenshot_on_error": true,
+    "screenshot_full_page": false,
+    "vision_rpa": {
+        "enabled": false,
+        "api_key": "",
+        "base_url": "",
+        "model": "gpt-4o",
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "timeout": 30,
+        "browser_ui_offset_x": 0,
+        "browser_ui_offset_y": 0
+    }
 }
