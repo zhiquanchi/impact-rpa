@@ -13,3 +13,10 @@ dependencies = [
     "questionary>=2.1.1",
     "rich>=14.2.0",
 ]
+
+[project.optional-dependencies]
+vision = [
+    "openai>=1.0.0",
+    "pyautogui>=0.9.54",
+    "pillow>=10.0.0",
+]

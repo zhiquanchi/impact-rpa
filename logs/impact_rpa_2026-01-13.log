@@ -1,0 +1,161 @@
+2026-01-13 15:46:15 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:15:48 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:15:53 | INFO | 开始测试 js_input 设置日期到下个月：2026-02-15
+2026-01-13 16:16:06 | WARNING | JS 输入方式未找到可用的日期输入框
+2026-01-13 16:19:17 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:19:52 | WARNING | JS 输入方式未找到可用的日期输入框
+2026-01-13 16:20:07 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:20:12 | WARNING | JS 输入方式未找到可用的日期输入框
+2026-01-13 16:23:13 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:23:45 | WARNING | JS 输入方式未找到可用的日期输入框
+2026-01-13 16:45:44 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 16:45:49 | INFO | 已打开日期选择器
+2026-01-13 16:46:14 | INFO | 已选择日期: 2026-02-13
+2026-01-13 16:46:14 | INFO | 目标日期=2026-02-13 element_click 成功
+2026-01-13 17:07:24 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:10:49 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:11:07 | INFO | 已选择 Template Term: CPAi 10%
+2026-01-13 17:11:08 | INFO | Template Term 选择: target='CPAi 10%', ok=True, current='Select'
+2026-01-13 17:11:24 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:11:25 | INFO | Template Term 选择: target='Public Commission', ok=True, current='Select'
+2026-01-13 17:11:40 | INFO | 已选择 Template Term: Public Terms
+2026-01-13 17:11:42 | INFO | Template Term 选择: target='Public Terms', ok=True, current='Select'
+2026-01-13 17:12:40 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:12:58 | INFO | 已选择 Template Term: CPAi 10%
+2026-01-13 17:13:02 | INFO | Template Term 选择: target='CPAi 10%', ok=True, current=None
+2026-01-13 17:13:18 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:13:22 | INFO | Template Term 选择: target='Public Commission', ok=True, current=None
+2026-01-13 17:13:37 | INFO | 已选择 Template Term: Public Terms
+2026-01-13 17:13:42 | INFO | Template Term 选择: target='Public Terms', ok=True, current=None
+2026-01-13 17:14:32 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:14:49 | INFO | 已选择 Template Term: CPAi 10%
+2026-01-13 17:14:54 | INFO | Template Term 选择: target='CPAi 10%', ok=True, current=None
+2026-01-13 17:15:09 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:15:14 | INFO | Template Term 选择: target='Public Commission', ok=True, current=None
+2026-01-13 17:15:29 | INFO | 已选择 Template Term: Public Terms
+2026-01-13 17:15:34 | INFO | Template Term 选择: target='Public Terms', ok=True, current=None
+2026-01-13 17:16:25 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:16:42 | INFO | 已选择 Template Term: CPAi 10%
+2026-01-13 17:16:49 | INFO | Template Term 选择: target='CPAi 10%', ok=True, current=None
+2026-01-13 17:17:04 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:17:10 | INFO | Template Term 选择: target='Public Commission', ok=True, current=None
+2026-01-13 17:17:25 | INFO | 已选择 Template Term: Public Terms
+2026-01-13 17:17:31 | INFO | Template Term 选择: target='Public Terms', ok=True, current=None
+2026-01-13 17:25:24 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:25:41 | INFO | 已选择 Template Term: CPAi 10%
+2026-01-13 17:25:47 | INFO | Template Term 选择: target='CPAi 10%', ok=True, current=None
+2026-01-13 17:26:02 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:26:08 | INFO | Template Term 选择: target='Public Commission', ok=True, current=None
+2026-01-13 17:26:24 | INFO | 已选择 Template Term: Public Terms
+2026-01-13 17:26:30 | INFO | Template Term 选择: target='Public Terms', ok=True, current=None
+2026-01-13 17:28:37 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:28:41 | INFO | 找到选项元素: text='CPAi 10%', tag=div
+2026-01-13 17:28:42 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:28:43 | INFO | 结果: option='CPAi 10%', method=native, ok=False, current='Select'
+2026-01-13 17:28:46 | INFO | 找到选项元素: text='Public Commission', tag=div
+2026-01-13 17:28:48 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:28:49 | INFO | 结果: option='Public Commission', method=native, ok=False, current='Select'
+2026-01-13 17:28:51 | INFO | 找到选项元素: text='CPAi 12%', tag=div
+2026-01-13 17:28:52 | INFO | 已点击选项: CPAi 12% (method=js)
+2026-01-13 17:28:53 | INFO | 结果: option='CPAi 12%', method=js, ok=True, current='Select'
+2026-01-13 17:28:56 | INFO | 找到选项元素: text='Public Terms', tag=div
+2026-01-13 17:28:56 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:28:57 | INFO | 结果: option='Public Terms', method=action, ok=False, current='Select'
+2026-01-13 17:29:26 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:29:45 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:29:49 | INFO | 找到选项元素: text='CPAi 10%', tag=li
+2026-01-13 17:29:51 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:29:52 | INFO | 结果: option='CPAi 10%', method=native, ok=False, current='Select'
+2026-01-13 17:29:54 | INFO | 找到选项元素: text='Public Commission', tag=li
+2026-01-13 17:29:56 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:29:57 | INFO | 结果: option='Public Commission', method=native, ok=False, current='Select'
+2026-01-13 17:30:00 | INFO | 找到选项元素: text='CPAi 12%', tag=li
+2026-01-13 17:30:00 | INFO | 已点击选项: CPAi 12% (method=js)
+2026-01-13 17:30:01 | INFO | 结果: option='CPAi 12%', method=js, ok=True, current='Select'
+2026-01-13 17:30:04 | INFO | 找到选项元素: text='Public Terms', tag=li
+2026-01-13 17:30:04 | ERROR | 点击选项失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:30:05 | INFO | 结果: option='Public Terms', method=action, ok=False, current='Select'
+2026-01-13 17:30:40 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:30:44 | INFO | 找到选项元素: text='CPAi 10%', tag=li
+2026-01-13 17:30:44 | INFO | 已点击选项: CPAi 10% (method=js)
+2026-01-13 17:30:45 | INFO | 结果: option='CPAi 10%', method=js, ok=True, current='Select'
+2026-01-13 17:30:48 | INFO | 找到选项元素: text='Public Commission', tag=li
+2026-01-13 17:30:48 | INFO | 已点击选项: Public Commission (method=action)
+2026-01-13 17:30:50 | INFO | 结果: option='Public Commission', method=action, ok=True, current='Select'
+2026-01-13 17:30:53 | INFO | 找到选项元素: text='CPAi 12%', tag=li
+2026-01-13 17:30:53 | INFO | 已点击选项: CPAi 12% (method=focus_click)
+2026-01-13 17:30:54 | INFO | 结果: option='CPAi 12%', method=focus_click, ok=True, current='Select'
+2026-01-13 17:30:57 | INFO | 找到选项元素: text='Public Terms', tag=li
+2026-01-13 17:30:57 | INFO | 已点击选项: Public Terms (method=dispatch)
+2026-01-13 17:30:59 | INFO | 结果: option='Public Terms', method=dispatch, ok=True, current='Select'
+2026-01-13 17:31:51 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:31:56 | INFO | 点击了 li: CPAi 10%
+2026-01-13 17:33:12 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:34:22 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:34:24 | INFO | JS 定位结果: {"found":true,"btn_text":"Select","btn_class":"focused responsive outline iui-multi-select-input-button iui-btn _4-15-1_tY1bu _4-15-1_lz0gi _4-15-1_uX2ME","parent_class":"iui-component iui-form-section"}
+2026-01-13 17:34:24 | INFO | 找到 Template Term 标签: tag=sub-header, text='Template Term'
+2026-01-13 17:34:44 | INFO | 找到按钮: text='Select'
+2026-01-13 17:34:45 | INFO | JS 选择结果: {"success":true,"clicked":"CPAi 10%"}
+2026-01-13 17:34:45 | INFO | JS 定位结果: {"found":true,"btn_text":"Select","btn_class":"responsive outline iui-multi-select-input-button iui-btn _4-15-1_tY1bu _4-15-1_lz0gi _4-15-1_uX2ME","parent_class":"iui-component iui-form-section"}
+2026-01-13 17:34:45 | INFO | 找到 Template Term 标签: tag=sub-header, text='Template Term'
+2026-01-13 17:35:05 | INFO | 找到按钮: text='Select'
+2026-01-13 17:36:26 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:36:28 | INFO | JS 定位结果: {"found":true,"btn_text":"Select","btn_class":"responsive outline iui-multi-select-input-button iui-btn _4-15-1_tY1bu _4-15-1_lz0gi _4-15-1_uX2ME","parent_class":"iui-component iui-form-section"}
+2026-01-13 17:36:28 | INFO | 找到 Template Term 标签: tag=sub-header, text='Template Term'
+2026-01-13 17:36:48 | INFO | 找到按钮: text='Select'
+2026-01-13 17:36:49 | INFO | 尝试点击选项: CPAi 10%
+2026-01-13 17:36:50 | WARNING | 方式1 失败: 
+该元素没有位置及大小。
+版本: 4.1.1.2
+2026-01-13 17:36:50 | INFO | 方式2 (js click) 成功
+2026-01-13 17:36:51 | INFO | JS 定位结果: {"found":true,"btn_text":"Select","btn_class":"responsive outline iui-multi-select-input-button iui-btn _4-15-1_tY1bu _4-15-1_lz0gi _4-15-1_uX2ME","parent_class":"iui-component iui-form-section"}
+2026-01-13 17:36:51 | INFO | 找到 Template Term 标签: tag=sub-header, text='Template Term'
+2026-01-13 17:37:11 | INFO | 找到按钮: text='Select'
+2026-01-13 17:38:02 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:39:22 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:41:13 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:42:23 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:43:47 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:44:41 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:46:32 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:46:47 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:53:24 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:53:44 | INFO | 设置保存成功
+2026-01-13 17:54:33 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:54:43 | INFO | 开始发送 Send Proposal，目标数量: 10
+2026-01-13 17:54:43 | INFO | [DRY-RUN] 开发测试模式已启用，不会真正点击按钮
+2026-01-13 17:54:45 | INFO | [DRY-RUN] [1/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:46 | INFO | [DRY-RUN] [2/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:48 | INFO | [DRY-RUN] [3/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:49 | INFO | [DRY-RUN] [4/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:51 | INFO | [DRY-RUN] [5/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:52 | INFO | [DRY-RUN] [6/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:54 | INFO | [DRY-RUN] [7/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:54:55 | INFO | [DRY-RUN] [8/10] 模拟点击 Send Proposal 按钮 (类别: Creators)
+2026-01-13 17:59:18 | INFO | 浏览器连接成功（默认方式）
+2026-01-13 17:59:28 | INFO | 开始发送 Send Proposal，目标数量: 10
+2026-01-13 17:59:28 | INFO | [DRY-RUN] 开发测试模式已启用，不会点击弹窗中的提交按钮
+2026-01-13 17:59:43 | INFO | 已选择 Template Term: Public Commission
+2026-01-13 17:59:44 | INFO | 已输入 tag: Creators
+2026-01-13 17:59:45 | INFO | 下拉选项文本: Creators (143115)
+2026-01-13 17:59:45 | INFO | 已选择下拉选项: Creators (143115)
+2026-01-13 17:59:46 | INFO | 已打开日期选择器
+2026-01-13 18:00:08 | INFO | 已选择日期: 2026-01-14
+2026-01-13 18:00:09 | INFO | 日期选择成功，使用方法: element_click
+2026-01-13 18:00:09 | INFO | 已填写留言内容
+2026-01-13 18:00:09 | INFO | 已填写留言内容
+2026-01-13 18:00:09 | INFO | [DRY-RUN] 跳过点击弹窗中的 Send Proposal 提交按钮
+2026-01-13 18:00:11 | WARNING | [DRY-RUN] 未能自动关闭弹窗，请手动关闭
+2026-01-13 18:00:11 | INFO | [DRY-RUN] [1/10] 已处理弹窗（未提交）(类别: Creators)

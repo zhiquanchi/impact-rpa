@@ -1,0 +1,124 @@
+2026-01-04 14:06:05 | ERROR | 浏览器连接失败: [WinError 5] 拒绝访问。
+2026-01-04 15:08:04 | INFO | 浏览器连接成功（默认方式）
+2026-01-04 15:08:10 | ERROR | 测试异常
+Traceback (most recent call last):
+
+  File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 390, in <module>
+    main()
+    └ <function main at 0x000001151CDCD120>
+
+> File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 379, in main
+    tester.run_interactive_test()
+    │      └ <function InteractiveDatePickerTester.run_interactive_test at 0x0000011520D67880>
+    └ <__main__.InteractiveDatePickerTester object at 0x0000011520ADB850>
+
+  File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 165, in run_interactive_test
+    if not self.init_and_navigate():
+           │    └ <function InteractiveDatePickerTester.init_and_navigate at 0x0000011520D676A0>
+           └ <__main__.InteractiveDatePickerTester object at 0x0000011520ADB850>
+
+  File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 79, in init_and_navigate
+    self.console.print("[green]✓ 页面加载完成[/green]")
+    │    │       └ <function Console.print at 0x000001151F54A160>
+    │    └ <console width=80 None>
+    └ <__main__.InteractiveDatePickerTester object at 0x0000011520ADB850>
+
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\console.py", line 1697, in print
+    with self:
+         └ <console width=80 None>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\console.py", line 870, in __exit__
+    self._exit_buffer()
+    │    └ <function Console._exit_buffer at 0x000001151F548680>
+    └ <console width=80 None>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\console.py", line 826, in _exit_buffer
+    self._check_buffer()
+    │    └ <function Console._check_buffer at 0x000001151F54A660>
+    └ <console width=80 None>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\console.py", line 2038, in _check_buffer
+    self._write_buffer()
+    │    └ <function Console._write_buffer at 0x000001151F54A700>
+    └ <console width=80 None>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\console.py", line 2074, in _write_buffer
+    legacy_windows_render(buffer, LegacyWindowsTerm(self.file))
+    │                     │       │                 │    └ <property object at 0x000001151F5443B0>
+    │                     │       │                 └ <console width=80 None>
+    │                     │       └ <class 'rich._win32_console.LegacyWindowsTerm'>
+    │                     └ [Segment('✓ 页面加载完成', Style(color=Color('green', ColorType.STANDARD, number=2))), Segment('\n')]
+    └ <function legacy_windows_render at 0x0000011520D720C0>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\_windows_renderer.py", line 17, in legacy_windows_render
+    term.write_styled(text, style)
+    │    │            │     └ Style(color=Color('green', ColorType.STANDARD, number=2))
+    │    │            └ '✓ 页面加载完成'
+    │    └ <function LegacyWindowsTerm.write_styled at 0x0000011520D71440>
+    └ <rich._win32_console.LegacyWindowsTerm object at 0x0000011520D87650>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\_win32_console.py", line 441, in write_styled
+    self.write_text(text)
+    │    │          └ '✓ 页面加载完成'
+    │    └ <function LegacyWindowsTerm.write_text at 0x0000011520D713A0>
+    └ <rich._win32_console.LegacyWindowsTerm object at 0x0000011520D87650>
+  File "C:\Users\chase.zhi\code\impact-rpa\.venv\Lib\site-packages\rich\_win32_console.py", line 402, in write_text
+    self.write(text)
+    │    │     └ '✓ 页面加载完成'
+    │    └ <built-in method write of _io.TextIOWrapper object at 0x000001151C8EC790>
+    └ <rich._win32_console.LegacyWindowsTerm object at 0x0000011520D87650>
+
+UnicodeEncodeError: 'gbk' codec can't encode character '\u2713' in position 0: illegal multibyte sequence
+2026-01-04 15:08:40 | INFO | 浏览器连接成功（默认方式）
+2026-01-04 15:08:44 | ERROR | 测试异常
+Traceback (most recent call last):
+
+  File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 401, in <module>
+    main()
+    └ <function main at 0x00000157C4C6D120>
+
+> File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 390, in main
+    tester.run_interactive_test()
+    │      └ <function InteractiveDatePickerTester.run_interactive_test at 0x00000157C8FEB880>
+    └ <__main__.InteractiveDatePickerTester object at 0x00000157C8B0A050>
+
+  File "C:\Users\chase.zhi\code\impact-rpa\test_date_picker_interactive.py", line 180, in run_interactive_test
+    input()
+
+EOFError: EOF when reading a line
+2026-01-04 15:19:54 | INFO | 浏览器连接成功（默认方式）
+2026-01-04 15:20:16 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:20:22 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:20:22 | WARNING | 元素点击方式未找到目标日期: 2026-01-04
+2026-01-04 15:20:38 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:20:44 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:20:44 | WARNING | 元素点击方式未找到目标日期: 2026-01-05
+2026-01-04 15:21:00 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:21:06 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:21:06 | WARNING | 元素点击方式未找到目标日期: 2026-02-01
+2026-01-04 15:21:22 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:21:28 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:21:28 | WARNING | 元素点击方式未找到目标日期: 2026-02-15
+2026-01-04 15:21:44 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:21:50 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:21:50 | WARNING | 元素点击方式未找到目标日期: 2026-02-28
+2026-01-04 15:21:54 | INFO | 已通过 JS 设置日期: 2026-01-04
+2026-01-04 15:21:57 | INFO | 已通过 JS 设置日期: 2026-01-05
+2026-01-04 15:22:00 | INFO | 已通过 JS 设置日期: 2026-02-01
+2026-01-04 15:22:04 | INFO | 已通过 JS 设置日期: 2026-02-15
+2026-01-04 15:22:07 | INFO | 已通过 JS 设置日期: 2026-02-28
+2026-01-04 15:23:10 | INFO | 浏览器连接成功（默认方式）
+2026-01-04 15:25:13 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:25:21 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:25:21 | WARNING | 元素点击方式未找到目标日期: 2026-01-04
+2026-01-04 15:27:19 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:27:27 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:27:27 | WARNING | 元素点击方式未找到目标日期: 2026-01-05
+2026-01-04 15:29:25 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:29:34 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:29:34 | WARNING | 元素点击方式未找到目标日期: 2026-02-01
+2026-01-04 15:31:32 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:31:40 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:31:40 | WARNING | 元素点击方式未找到目标日期: 2026-02-15
+2026-01-04 15:33:38 | WARNING | 未找到月份切换按钮 (direction=next)
+2026-01-04 15:33:46 | WARNING | 未找到月份切换按钮 (direction=prev)
+2026-01-04 15:33:46 | WARNING | 元素点击方式未找到目标日期: 2026-02-28
+2026-01-04 15:33:50 | INFO | 已通过 JS 设置日期: 2026-01-04
+2026-01-04 15:33:53 | INFO | 已通过 JS 设置日期: 2026-01-05
+2026-01-04 15:33:56 | INFO | 已通过 JS 设置日期: 2026-02-01
+2026-01-04 15:34:00 | INFO | 已通过 JS 设置日期: 2026-02-15
+2026-01-04 15:34:03 | INFO | 已通过 JS 设置日期: 2026-02-28

@@ -3,8 +3,8 @@
     "scroll_delay": 1.0,
     "click_delay": 0.5,
     "modal_wait": 20.0,
-    "dry_run": true,
-    "template_term": "Commission Tier Terms",
+    "dry_run": false,
+    "template_term": "Public Commission",
     "screenshot_on_error": true,
     "screenshot_full_page": false,
     "vision_rpa": {

@@ -1108,12 +1108,13 @@ class ProposalSender:
         if self.dry_run:
             self.console.print(Panel(
                 "[bold yellow]⚠️  开发测试模式 (DRY-RUN)[/bold yellow]\n"
-                "不会真正点击 Send Proposal 按钮，仅模拟流程\n"
+                "会点击列表页的 Send Proposal 按钮并打开弹窗\n"
+                "会填写弹窗表单，但[bold]不会点击弹窗中的提交按钮[/bold]\n"
                 "如需正式运行，请在 config/settings.json 中设置 \"dry_run\": false",
                 title="[yellow]测试模式[/yellow]",
                 border_style="yellow"
             ))
-            logger.info("[DRY-RUN] 开发测试模式已启用，不会真正点击按钮")
+            logger.info("[DRY-RUN] 开发测试模式已启用，不会点击弹窗中的提交按钮")
         
         self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]")
         
@@ -1217,18 +1218,6 @@ class ProposalSender:
                                     parent.hover()
                                     time.sleep(0.3)
                                     
-                                    # 开发测试模式：不实际点击按钮
-                                    if self.dry_run:
-                                        clicked_count += 1
-                                        logger.info(f"[DRY-RUN] [{clicked_count}/{max_count}] 模拟点击 Send Proposal 按钮 (类别: {selected_tab})")
-                                        self.console.print(f"[cyan]⚡ [DRY-RUN] [{clicked_count}/{max_count}][/cyan] 模拟点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
-                                        self._mark_button_state(btn, self.clicked_attr)
-                                        if pending_batch_buttons > 0:
-                                            pending_batch_buttons = max(pending_batch_buttons - 1, 0)
-                                        if pending_batch_buttons == 0:
-                                            should_scroll_after_batch = True
-                                        break
-                                    
                                     clicked = False
                                     try:
                                         btn.click(by_js=True)
@@ -1254,8 +1243,12 @@ class ProposalSender:
                                     if modal_success:
                                         # 弹窗处理成功，增加计数并标记按钮
                                         clicked_count += 1
-                                        logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
-                                        self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                        if self.dry_run:
+                                            logger.info(f"[DRY-RUN] [{clicked_count}/{max_count}] 已处理弹窗（未提交）(类别: {selected_tab})")
+                                            self.console.print(f"[cyan]⚡ [DRY-RUN] [{clicked_count}/{max_count}][/cyan] 已处理弹窗（未提交）[dim](类别: {selected_tab})[/dim]")
+                                        else:
+                                            logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
+                                            self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
                                         self._mark_button_state(btn, self.clicked_attr)
                                         if pending_batch_buttons > 0:
                                             pending_batch_buttons = max(pending_batch_buttons - 1, 0)
@@ -1379,6 +1372,127 @@ class ProposalSender:
             logger.error(f"处理弹窗失败: {e}")
         return False
     
+    def _get_template_term_options(self, iframe) -> list[str]:
+        """
+        获取 Template Term 下拉框的所有选项值
+        
+        Args:
+            iframe: iframe 对象
+            
+        Returns:
+            list[str]: 选项文本列表，如果失败则返回空列表
+        """
+        options_list = []
+        try:
+            opened = False
+            
+            # 尝试通过 Template Term 标签找到下拉按钮
+            term_section = iframe.ele('text:Template Term', timeout=2)
+            if term_section:
+                parent = term_section.parent()
+                for _ in range(5):
+                    if parent:
+                        dropdown_btn = parent.ele(
+                            'css:button[data-testid="uicl-multi-select-input-button"]',
+                            timeout=0.2,
+                        )
+                        if not dropdown_btn:
+                            dropdown_btn = parent.ele(
+                                'css:button.iui-multi-select-input-button, button[aria-haspopup="listbox"], button[role="button"]',
+                                timeout=0.2,
+                            )
+                        if not dropdown_btn:
+                            dropdown_btn = parent.ele(
+                                'css:button, [class*="select"], [class*="dropdown"]',
+                                timeout=0.2,
+                            )
+                        
+                        if dropdown_btn:
+                            dropdown_btn.click(by_js=True)
+                            dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                            if dropdown:
+                                opened = True
+                                break
+                            time.sleep(0.2)
+                        parent = parent.parent()
+            
+            # 兜底：直接找触发器按钮
+            if not opened:
+                try:
+                    dropdown_btn = iframe.ele('css:button[data-testid="uicl-multi-select-input-button"]', timeout=0.5)
+                    if not dropdown_btn:
+                        dropdown_btn = iframe.ele('css:.iui-multi-select-input-button', timeout=0.5)
+                    if dropdown_btn:
+                        dropdown_btn.click(by_js=True)
+                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                        if dropdown:
+                            opened = True
+                except Exception:
+                    pass
+            
+            # 再兜底：点击 please-select
+            if not opened:
+                try:
+                    please_select = iframe.ele('css:span.please-select', timeout=0.5)
+                    if please_select:
+                        please_select.click(by_js=True)
+                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
+                        if dropdown:
+                            opened = True
+                except Exception:
+                    pass
+            
+            time.sleep(0.3)
+            
+            # 获取下拉框并提取选项
+            dropdown = None
+            dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
+            if dropdowns:
+                dropdown = dropdowns[-1]
+            
+            if dropdown:
+                # 先尝试获取 li[@role="option"] 元素
+                items = dropdown.eles('xpath:.//li[@role="option"]')
+                for it in items or []:
+                    txt = it.text or ''
+                    if txt.strip():
+                        options_list.append(txt.strip())
+                
+                # 如果没有找到，尝试获取 div.text-ellipsis 元素
+                if not options_list:
+                    nodes = dropdown.eles('css:div.text-ellipsis')
+                    for it in nodes or []:
+                        txt = it.text or ''
+                        if txt.strip():
+                            options_list.append(txt.strip())
+            
+            # 如果还是没有找到，尝试从 select 元素获取
+            if not options_list:
+                term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
+                if term_dropdown:
+                    try:
+                        option_elements = term_dropdown.eles('css:option')
+                        for opt in option_elements or []:
+                            txt = opt.text or opt.attr('value') or ''
+                            if txt.strip():
+                                options_list.append(txt.strip())
+                    except Exception:
+                        pass
+            
+            # 去重并保持顺序
+            seen = set()
+            unique_options = []
+            for opt in options_list:
+                if opt.lower() not in seen:
+                    seen.add(opt.lower())
+                    unique_options.append(opt)
+            
+            return unique_options
+            
+        except Exception as e:
+            logger.error(f"获取 Template Term 选项失败: {e}")
+            return []
+    
     def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
         """选择 Template Term"""
         try:
@@ -1458,15 +1572,61 @@ class ProposalSender:
             
             time.sleep(0.3)
 
-            # 优先在当前弹出的 uicl-dropdown 中精确点击目标项（更稳定，避免点到别的区域同名文本）
+            # 使用 JS 找到真正可见的下拉框（避免找到隐藏的 Portal 元素）
             dropdown = None
-            dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
-            if dropdowns:
-                dropdown = dropdowns[-1]
+            js_find_visible = """
+            return (function() {
+                var selectors = ['div[data-testid="uicl-dropdown"]', 'div.iui-dropdown', 'ul[role="listbox"]'];
+                for (var sel of selectors) {
+                    var els = document.querySelectorAll(sel);
+                    for (var el of els) {
+                        var rect = el.getBoundingClientRect();
+                        var style = window.getComputedStyle(el);
+                        if (rect.width > 50 && rect.height > 50 && style.display !== 'none') {
+                            el.setAttribute('data-rpa-visible-dropdown', 'true');
+                            return 'found';
+                        }
+                    }
+                }
+                return 'not_found';
+            })();
+            """
+            try:
+                result = iframe.run_js(js_find_visible)
+                if result == 'found':
+                    dropdown = iframe.ele('css:[data-rpa-visible-dropdown="true"]', timeout=1)
+                    # 清理标记
+                    if dropdown:
+                        try:
+                            dropdown.run_js('this.removeAttribute("data-rpa-visible-dropdown");')
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            
+            # 备用：遍历所有下拉框找可见的
+            if not dropdown:
+                dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
+                for dd in dropdowns or []:
+                    try:
+                        rect_js = "var r = this.getBoundingClientRect(); var s = window.getComputedStyle(this); return JSON.stringify({w: r.width, h: r.height, d: s.display});"
+                        import json
+                        data = json.loads(dd.run_js(rect_js))
+                        if data['w'] > 0 and data['h'] > 0 and data['d'] != 'none':
+                            dropdown = dd
+                            break
+                    except Exception:
+                        pass
 
             if dropdown:
                 options = []
-                items = dropdown.eles('xpath:.//li[@role="option"]')
+                # 优先从 listbox 中获取选项
+                listbox = dropdown.ele('css:ul[role="listbox"]', timeout=0.5)
+                if listbox:
+                    items = listbox.eles('css:li')
+                else:
+                    items = dropdown.eles('xpath:.//li[@role="option"]')
+                
                 for it in items or []:
                     txt = it.text or ''
                     txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
@@ -1485,7 +1645,11 @@ class ProposalSender:
                         matches[0][2].wait.clickable()
                     except Exception:
                         pass
-                    matches[0][2].click(by_js=None)
+                    # 优先使用原生点击（如果元素有尺寸）
+                    try:
+                        matches[0][2].click()
+                    except Exception:
+                        matches[0][2].click(by_js=True)
                     logger.info(f"已选择 Template Term: {matches[0][0]}")
                     time.sleep(0.3)
                     return True
@@ -1500,7 +1664,10 @@ class ProposalSender:
                             pick[2].wait.clickable()
                         except Exception:
                             pass
-                        pick[2].click(by_js=None)
+                        try:
+                            pick[2].click()
+                        except Exception:
+                            pick[2].click(by_js=True)
                         settings = self.config.load_settings()
                         settings['template_term'] = pick[0]
                         self.config.save_settings(settings)
@@ -1519,7 +1686,10 @@ class ProposalSender:
                             pick[2].wait.clickable()
                         except Exception:
                             pass
-                        pick[2].click(by_js=None)
+                        try:
+                            pick[2].click()
+                        except Exception:
+                            pick[2].click(by_js=True)
                         settings = self.config.load_settings()
                         settings['template_term'] = pick[0]
                         self.config.save_settings(settings)
@@ -1680,10 +1850,17 @@ class ProposalSender:
     def _submit_proposal(self, iframe) -> bool:
         """提交 Proposal"""
         try:
+            # 开发测试模式：不点击弹窗中的提交按钮
+            if self.dry_run:
+                logger.info("[DRY-RUN] 跳过点击弹窗中的 Send Proposal 提交按钮")
+                self.console.print("[cyan]⚡ [DRY-RUN] 跳过点击弹窗中的提交按钮[/cyan]")
+                # 关闭弹窗（点击关闭按钮或按 ESC）
+                self._close_modal(iframe)
+                return True
+            
             submit_btn = iframe.ele('css:button[data-testid="uicl-button"]', timeout=3)
             if submit_btn and 'Send Proposal' in submit_btn.text:
                 submit_btn.click(by_js=True)
-                logger.info("已点击提交按钮")
                 logger.info("已点击提交按钮")
                 time.sleep(1)
                 self._click_understand_button(iframe)
@@ -1711,6 +1888,45 @@ class ProposalSender:
             
         except Exception as e:
             logger.error(f"点击提交按钮失败: {e}")
+        return False
+    
+    def _close_modal(self, iframe) -> bool:
+        """关闭弹窗（用于 dry_run 模式）"""
+        try:
+            # 尝试点击关闭按钮
+            close_btn = self.browser.find_element(
+                'css:button[data-testid="uicl-icon-button"]',
+                timeout=1,
+                parent=iframe
+            )
+            if close_btn:
+                self.browser.click(close_btn, by_js=True)
+                logger.info("[DRY-RUN] 已关闭弹窗")
+                time.sleep(0.5)
+                return True
+            
+            # 备用：尝试点击 Cancel 按钮
+            cancel_btn = iframe.ele('text:Cancel', timeout=1)
+            if cancel_btn and cancel_btn.tag == 'button':
+                cancel_btn.click(by_js=True)
+                logger.info("[DRY-RUN] 已点击 Cancel 关闭弹窗")
+                time.sleep(0.5)
+                return True
+            
+            # 再备用：按 ESC 键
+            try:
+                self.browser.tab.actions.key_down('Escape').key_up('Escape').perform()
+                logger.info("[DRY-RUN] 已按 ESC 关闭弹窗")
+                time.sleep(0.5)
+                return True
+            except Exception:
+                pass
+            
+            logger.warning("[DRY-RUN] 未能自动关闭弹窗，请手动关闭")
+            return False
+            
+        except Exception as e:
+            logger.warning(f"[DRY-RUN] 关闭弹窗失败: {e}")
         return False
     
     def _click_understand_button(self, iframe) -> bool:
@@ -1786,10 +2002,19 @@ class ProposalSender:
 class MenuUI:
     """用户界面类，负责菜单显示和用户交互"""
     
-    def __init__(self, config: ConfigManager, template_manager: TemplateManager, console: Console):
+    def __init__(
+        self,
+        config: ConfigManager,
+        template_manager: TemplateManager,
+        console: Console,
+        browser: BrowserManager | None = None,
+        proposal_sender: "ProposalSender | None" = None,
+    ):
         self.config = config
         self.template_manager = template_manager
         self.console = console
+        self.browser = browser
+        self.proposal_sender = proposal_sender
     
     def show_main_menu(self) -> str | None:
         """显示主菜单"""
@@ -1804,7 +2029,7 @@ class MenuUI:
             questionary.Choice("✏️  编辑留言模板", value="3"),
             questionary.Choice("🔢 设置发送数量", value="4"),
             questionary.Choice("⚙️  查看当前设置", value="5"),
-            questionary.Choice("🔧 设置 Template Term 文本", value="6"),
+            questionary.Choice("🔧 设置 Template Term 下拉选项", value="6"),
             questionary.Choice("🚪  退出程序", value="0"),
         ]
         
@@ -2120,13 +2345,101 @@ class MenuUI:
         """设置 Template Term 文本"""
         settings = self.config.load_settings()
         current = (settings.get('template_term') or '').strip()
-        new_value = questionary.text("请输入 Template Term 文本:", default=current).ask()
-        if new_value is None:
+        
+        self.console.print(f"[cyan]当前 Template Term: [bold]{current or '(未设置)'}[/bold][/cyan]")
+        
+        # 选择设置方式
+        choices = [
+            questionary.Choice("⌨️  手动输入", value="manual"),
+            questionary.Choice("🌐 从浏览器弹窗获取选项列表", value="browser"),
+            questionary.Choice("🔙 取消", value="cancel"),
+        ]
+        
+        method = questionary.select("选择设置方式:", choices=choices).ask()
+        
+        if method is None or method == "cancel":
             return
-        new_value = (new_value or '').strip()
-        settings['template_term'] = new_value
+        
+        if method == "manual":
+            new_value = questionary.text("请输入 Template Term 文本:", default=current).ask()
+            if new_value is None:
+                return
+            new_value = (new_value or '').strip()
+            settings['template_term'] = new_value
+            if self.config.save_settings(settings):
+                self.console.print(f"[bold green]✓ Template Term 已设置为: {new_value or '(未设置)'}[/bold green]")
+        
+        elif method == "browser":
+            self._set_template_term_from_browser(settings, current)
+    
+    def _set_template_term_from_browser(self, settings: dict, current: str):
+        """从浏览器弹窗获取 Template Term 选项并让用户选择"""
+        if not self.browser or not self.proposal_sender:
+            self.console.print("[red]浏览器未初始化，无法从浏览器获取选项[/red]")
+            return
+        
+        if not self.browser.is_connected():
+            self.console.print("[red]浏览器未连接，请先确保浏览器已打开[/red]")
+            return
+        
+        self.console.print(Panel(
+            "[bold]请在浏览器中完成以下操作：[/bold]\n"
+            "1. 导航到包含 Send Proposal 按钮的页面\n"
+            "2. 手动点击任意一个 [bold cyan]Send Proposal[/bold cyan] 按钮\n"
+            "3. 等待弹窗加载完成\n"
+            "4. 返回此处按任意键继续",
+            title="[cyan]操作指南[/cyan]",
+            border_style="cyan"
+        ))
+        questionary.press_any_key_to_continue("弹窗打开后，按任意键继续...").ask()
+        
+        # 查找弹窗 iframe
+        self.console.print("[cyan]正在查找弹窗...[/cyan]")
+        iframe = self.browser.find_element(
+            'css:iframe[data-testid="uicl-modal-iframe-content"]',
+            timeout=5
+        )
+        
+        if not iframe:
+            self.console.print("[red]未找到弹窗 iframe，请确保 Send Proposal 弹窗已打开[/red]")
+            return
+        
+        # 获取选项列表
+        self.console.print("[cyan]正在获取 Template Term 选项列表...[/cyan]")
+        options = self.proposal_sender._get_template_term_options(iframe)
+        
+        if not options:
+            self.console.print("[yellow]未获取到选项列表，可能弹窗结构已变化[/yellow]")
+            return
+        
+        # 显示选项列表让用户选择
+        self.console.print(f"\n[bold]检测到 {len(options)} 个可选项：[/bold]")
+        
+        option_choices = []
+        for opt in options:
+            mark = " ✓" if opt.lower() == current.lower() else ""
+            option_choices.append(questionary.Choice(f"{opt}{mark}", value=opt))
+        option_choices.append(questionary.Choice("🔙 取消", value=None))
+        
+        selected = questionary.select(
+            "请选择 Template Term:",
+            choices=option_choices,
+            style=questionary.Style([
+                ('highlighted', 'fg:cyan bold'),
+                ('pointer', 'fg:cyan bold'),
+            ])
+        ).ask()
+        
+        if selected is None:
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+        
+        settings['template_term'] = selected
         if self.config.save_settings(settings):
-            self.console.print(f"[bold green]✓ Template Term 已设置为: {new_value or '(未设置)'}[/bold green]")
+            self.console.print(f"[bold green]✓ Template Term 已设置为: {selected}[/bold green]")
+            
+            # 提示用户关闭弹窗
+            self.console.print("[dim]提示：请手动关闭浏览器中的弹窗[/dim]")
 
 
 class ImpactRPA:
@@ -2138,7 +2451,13 @@ class ImpactRPA:
         self.template_manager = TemplateManager(self.config)
         self.browser = BrowserManager(self.console, self.config)
         self.proposal_sender = ProposalSender(self.browser, self.template_manager, self.console, self.config)
-        self.menu = MenuUI(self.config, self.template_manager, self.console)
+        self.menu = MenuUI(
+            self.config,
+            self.template_manager,
+            self.console,
+            browser=self.browser,
+            proposal_sender=self.proposal_sender,
+        )
     
     def start(self):
         """启动应用"""
