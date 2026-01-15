@@ -2030,6 +2030,7 @@ class MenuUI:
             questionary.Choice("🔢 设置发送数量", value="4"),
             questionary.Choice("⚙️  查看当前设置", value="5"),
             questionary.Choice("🔧 设置 Template Term 下拉选项", value="6"),
+            questionary.Choice("🔄 检查并更新代码", value="7"),
             questionary.Choice("🚪  退出程序", value="0"),
         ]
         
@@ -2440,6 +2441,22 @@ class MenuUI:
             
             # 提示用户关闭弹窗
             self.console.print("[dim]提示：请手动关闭浏览器中的弹窗[/dim]")
+    
+    def check_and_update(self):
+        """检查并更新代码"""
+        try:
+            from update_manager import UpdateManager
+            update_manager = UpdateManager(console=self.console)
+            update_manager.show_update_ui()
+            questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
+        except ImportError:
+            self.console.print("[red]错误：无法导入更新管理器模块[/red]")
+            self.console.print("[yellow]请确保已安装 dulwich 库：pip install dulwich[/yellow]")
+            questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
+        except Exception as e:
+            self.console.print(f"[red]更新失败: {e}[/red]")
+            logger.error(f"更新失败: {e}")
+            questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
 
 
 class ImpactRPA:
@@ -2493,6 +2510,8 @@ class ImpactRPA:
                 self.menu.view_settings()
             elif choice == '6':
                 self.menu.set_template_term()
+            elif choice == '7':
+                self.menu.check_and_update()
             elif choice == '0':
                 self.console.print("\n[bold cyan]感谢使用，再见！👋[/bold cyan]")
                 break
