@@ -4,10 +4,12 @@ Update Manager - 使用 Dulwich 管理代码更新
 """
 import os
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+import questionary
 
 
 class UpdateManager:
@@ -20,7 +22,7 @@ class UpdateManager:
         'config/templates.json',
     ]
     
-    def __init__(self, repo_path: str | None = None, console: Console | None = None):
+    def __init__(self, repo_path: Optional[str] = None, console: Optional[Console] = None):
         """
         初始化更新管理器
         
@@ -43,9 +45,9 @@ class UpdateManager:
                 raise
         return self._repo
     
-    def _backup_config_files(self) -> dict[str, bytes]:
+    def _backup_config_files(self) -> Dict[str, bytes]:
         """备份配置文件内容"""
-        backups = {}
+        backups: Dict[str, bytes] = {}
         for file_path in self.PROTECTED_FILES:
             full_path = self.repo_path / file_path
             if full_path.exists():
@@ -57,7 +59,7 @@ class UpdateManager:
                     logger.warning(f"备份配置文件失败 {file_path}: {e}")
         return backups
     
-    def _restore_config_files(self, backups: dict[str, bytes]):
+    def _restore_config_files(self, backups: Dict[str, bytes]):
         """恢复配置文件内容"""
         for file_path, content in backups.items():
             full_path = self.repo_path / file_path
@@ -69,7 +71,7 @@ class UpdateManager:
             except Exception as e:
                 logger.error(f"恢复配置文件失败 {file_path}: {e}")
     
-    def check_for_updates(self) -> tuple[bool, str]:
+    def check_for_updates(self) -> Tuple[bool, str]:
         """
         检查是否有可用更新
         
@@ -104,8 +106,12 @@ class UpdateManager:
                 if not remote_head:
                     return False, "无法获取远程分支信息"
                 
+                # 安全地格式化 commit hash
+                current_hash = head[:7].decode('utf-8', errors='ignore') if len(head) >= 7 else head.decode('utf-8', errors='ignore')
+                remote_hash = remote_head[:7].decode('utf-8', errors='ignore') if len(remote_head) >= 7 else remote_head.decode('utf-8', errors='ignore')
+                
                 if head != remote_head:
-                    return True, f"有新的更新可用\n当前: {head[:7].decode('utf-8')}\n最新: {remote_head[:7].decode('utf-8')}"
+                    return True, f"有新的更新可用\n当前: {current_hash}\n最新: {remote_hash}"
                 else:
                     return False, "已是最新版本"
                     
@@ -117,7 +123,7 @@ class UpdateManager:
             logger.error(f"检查更新时出错: {e}")
             return False, f"检查更新失败: {str(e)}"
     
-    def pull_updates(self) -> tuple[bool, str]:
+    def pull_updates(self) -> Tuple[bool, str]:
         """
         从远程仓库拉取更新
         
@@ -184,8 +190,11 @@ class UpdateManager:
             from datetime import datetime
             commit_date = datetime.fromtimestamp(commit_time).strftime('%Y-%m-%d %H:%M:%S')
             
+            # 安全地格式化 commit hash
+            commit_hash = head[:7].decode('utf-8', errors='ignore') if len(head) >= 7 else head.decode('utf-8', errors='ignore')
+            
             version_info = (
-                f"Commit: {head[:7].decode('utf-8')}\n"
+                f"Commit: {commit_hash}\n"
                 f"信息: {message}\n"
                 f"作者: {author}\n"
                 f"日期: {commit_date}"
@@ -229,7 +238,6 @@ class UpdateManager:
             ))
             
             # 询问是否更新
-            import questionary
             if questionary.confirm("是否立即更新?", default=True).ask():
                 with Progress(
                     SpinnerColumn(),

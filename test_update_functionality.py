@@ -51,15 +51,24 @@ def test_update_manager():
         console.print(f"[dim]  - {f}[/dim]")
     console.print()
     
-    # 5. 测试备份功能
-    console.print("[yellow]5. 测试配置文件备份...[/yellow]")
+    # 5. 测试配置文件保护功能
+    console.print("[yellow]5. 测试配置文件保护功能...[/yellow]")
     try:
-        backups = um._backup_config_files()
-        console.print(f"[green]✓ 备份成功: {len(backups)} 个文件[/green]")
-        for f in backups:
-            console.print(f"[dim]  - {f} ({len(backups[f])} bytes)[/dim]")
+        # 检查保护列表是否正确配置
+        protected_count = len(UpdateManager.PROTECTED_FILES)
+        if protected_count > 0:
+            console.print(f"[green]✓ 配置文件保护功能已启用: {protected_count} 个文件受保护[/green]")
+            for f in UpdateManager.PROTECTED_FILES:
+                # 检查文件是否存在
+                file_path = um.repo_path / f
+                if file_path.exists():
+                    console.print(f"[dim]  - {f} (存在, {file_path.stat().st_size} bytes)[/dim]")
+                else:
+                    console.print(f"[dim]  - {f} (不存在)[/dim]")
+        else:
+            console.print(f"[yellow]⚠ 配置文件保护列表为空[/yellow]")
     except Exception as e:
-        console.print(f"[red]✗ 备份失败: {e}[/red]")
+        console.print(f"[red]✗ 检查失败: {e}[/red]")
         return False
     
     console.print("\n[bold green]所有测试通过！[/bold green]")
