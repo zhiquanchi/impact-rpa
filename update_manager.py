@@ -45,6 +45,26 @@ class UpdateManager:
                 raise
         return self._repo
     
+    @staticmethod
+    def _format_commit_hash(commit_hash: bytes, short: bool = True) -> str:
+        """
+        安全地格式化 commit hash
+        
+        Args:
+            commit_hash: commit hash 的字节串
+            short: 是否返回短格式 (7个字符)
+            
+        Returns:
+            格式化后的 commit hash 字符串
+        """
+        try:
+            decoded = commit_hash.decode('utf-8', errors='ignore')
+            if short and len(decoded) >= 7:
+                return decoded[:7]
+            return decoded
+        except Exception:
+            return str(commit_hash)
+    
     def _backup_config_files(self) -> Dict[str, bytes]:
         """备份配置文件内容"""
         backups: Dict[str, bytes] = {}
@@ -106,9 +126,9 @@ class UpdateManager:
                 if not remote_head:
                     return False, "无法获取远程分支信息"
                 
-                # 安全地格式化 commit hash
-                current_hash = head[:7].decode('utf-8', errors='ignore') if len(head) >= 7 else head.decode('utf-8', errors='ignore')
-                remote_hash = remote_head[:7].decode('utf-8', errors='ignore') if len(remote_head) >= 7 else remote_head.decode('utf-8', errors='ignore')
+                # 格式化 commit hash
+                current_hash = self._format_commit_hash(head)
+                remote_hash = self._format_commit_hash(remote_head)
                 
                 if head != remote_head:
                     return True, f"有新的更新可用\n当前: {current_hash}\n最新: {remote_hash}"
@@ -190,8 +210,8 @@ class UpdateManager:
             from datetime import datetime
             commit_date = datetime.fromtimestamp(commit_time).strftime('%Y-%m-%d %H:%M:%S')
             
-            # 安全地格式化 commit hash
-            commit_hash = head[:7].decode('utf-8', errors='ignore') if len(head) >= 7 else head.decode('utf-8', errors='ignore')
+            # 格式化 commit hash
+            commit_hash = self._format_commit_hash(head)
             
             version_info = (
                 f"Commit: {commit_hash}\n"
