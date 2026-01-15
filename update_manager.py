@@ -58,10 +58,11 @@ class UpdateManager:
             格式化后的 commit hash 字符串
         """
         try:
-            decoded = commit_hash.decode('utf-8', errors='ignore')
-            if short and len(decoded) >= 7:
-                return decoded[:7]
-            return decoded
+            # Git commit hashes are hex-encoded
+            hex_hash = commit_hash.hex() if hasattr(commit_hash, 'hex') else commit_hash.decode('ascii', errors='ignore')
+            if short and len(hex_hash) >= 7:
+                return hex_hash[:7]
+            return hex_hash
         except Exception:
             return str(commit_hash)
     
@@ -100,7 +101,6 @@ class UpdateManager:
         """
         try:
             from dulwich.client import get_transport_and_path
-            from dulwich.porcelain import get_remote_repo
             
             repo = self._get_repo()
             
@@ -114,7 +114,6 @@ class UpdateManager:
             
             # 获取当前分支
             head = repo.head()
-            current_commit = repo[head]
             
             # 获取远程最新提交
             try:
