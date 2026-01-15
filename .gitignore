@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Configuration files (user-specific)
+config/settings.json
+config/template.txt
+config/templates.json
+
+# Logs and screenshots
+logs/
