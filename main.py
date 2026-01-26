@@ -4,6 +4,7 @@ import time
 import os
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from loguru import logger
 import questionary
@@ -1005,6 +1006,14 @@ class DatePicker:
         return False
 
 
+@dataclass(frozen=True)
+class SendProposalsResult:
+    """send_proposals 执行结果，用于区分「全部完成」与「提前退出」"""
+
+    clicked_count: int
+    completed_all: bool
+
+
 class ProposalSender:
     """Proposal发送类，负责核心的RPA操作"""
     
@@ -1068,15 +1077,17 @@ class ProposalSender:
         except Exception as e:
             logger.error(f"配置视觉 RPA 失败: {e}")
     
-    def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> int:
+    def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> SendProposalsResult:
         """
         循环点击页面上所有的 Send Proposal 按钮
         
         Args:
             max_count: 最大发送数量
+            template_content: 留言模板内容，None 时使用当前激活模板
             
         Returns:
-            实际发送的数量
+            SendProposalsResult(clicked_count, completed_all)。
+            completed_all 仅当达到 max_count 时为 True；重连失败等会 raise，不返回。
         """
         # 等待用户操作完成
         self.console.print(Panel(
@@ -1127,18 +1138,18 @@ class ProposalSender:
                     consecutive_errors = 0
                     time.sleep(1)
                 else:
-                    # 记录重连失败的异常
+                    err = Exception("浏览器重连失败")
                     exception_handler.log_exception(
-                        Exception("浏览器重连失败"),
+                        err,
                         context={
                             "consecutive_errors": consecutive_errors,
                             "total_scrolls": total_scrolls,
                             "clicked_count": clicked_count
                         },
-                        send_notification=True
+                        send_notification=False,
                     )
                     self.console.print("[red]重连失败，停止执行[/red]")
-                    break
+                    raise RuntimeError("浏览器重连失败") from err
             
             try:
                 # 查找当前可见的所有 Send Proposal 按钮
@@ -1204,7 +1215,7 @@ class ProposalSender:
                         logger.info(f"已达到目标数量 {max_count}，停止发送")
                         self.console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
                         self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
-                        return clicked_count
+                        return SendProposalsResult(clicked_count=clicked_count, completed_all=True)
                     
                     try:
                         selected_tab = self._get_selected_tab_value(btn)
@@ -1321,7 +1332,10 @@ class ProposalSender:
         
         logger.info(f"发送完成，共发送 {clicked_count} 个 Send Proposal")
         self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
-        return clicked_count
+        return SendProposalsResult(
+            clicked_count=clicked_count,
+            completed_all=(clicked_count >= max_count),
+        )
     
     def _get_selected_tab_value(self, btn) -> str | None:
         """获取按钮所在行的 selected-tab 值"""
@@ -2516,6 +2530,27 @@ class ImpactRPA:
                 self.console.print("\n[bold cyan]感谢使用，再见！👋[/bold cyan]")
                 break
     
+    def _notify_proposal_run(
+        self,
+        result: SendProposalsResult | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """
+        按策略发送桌面通知：仅在意料之外的异常或全部任务成功完成时通知。
+        不通知：用户取消、未全部完成即正常退出等。
+        """
+        if error is not None:
+            msg = f"发送失败: {error}"
+        elif result is not None and result.completed_all:
+            msg = f"发送完成，共发送 {result.clicked_count} 个"
+        else:
+            return
+        try:
+            from notification_service import NotificationService, NotificationPayload
+            NotificationService().send(NotificationPayload(message=msg))
+        except Exception:
+            pass
+
     def _start_send_proposals(self):
         """开始发送 Proposal"""
         if not self.browser.is_connected():
@@ -2542,18 +2577,10 @@ class ImpactRPA:
             return
         
         try:
-            count = self.proposal_sender.send_proposals(max_count, template)
-            try:
-                from notification_service import NotificationService, NotificationPayload
-                NotificationService().send(NotificationPayload(message=f"发送完成，共发送 {count} 个"))
-            except Exception:
-                pass
+            result = self.proposal_sender.send_proposals(max_count, template)
+            self._notify_proposal_run(result=result, error=None)
         except Exception as e:
-            try:
-                from notification_service import NotificationService, NotificationPayload
-                NotificationService().send(NotificationPayload(message=f"发送失败: {e}"))
-            except Exception:
-                pass
+            self._notify_proposal_run(result=None, error=e)
 
 
 if __name__ == "__main__":
