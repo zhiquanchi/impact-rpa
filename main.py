@@ -1336,7 +1336,69 @@ class ProposalSender:
             clicked_count=clicked_count,
             completed_all=(clicked_count >= max_count),
         )
-    
+
+    def send_proposal_by_table_row(self, row_index: int, template_content: str | None = None) -> bool:
+        """
+        在 pd-creator-rt-search-ui 表格中点击指定行，再点击出现的 Send Proposal 按钮，
+        弹窗后的处理与 send_proposals 中点击 Send Proposal 之后一致（_handle_proposal_modal）。
+
+        选择器: #pd-creator-rt-search-ui div.table-body > div:nth-child(N)，N 为行号（从 1 起）。
+
+        Args:
+            row_index: 表格行号，对应 div:nth-child(row_index)，从 1 开始。
+            template_content: 留言模板内容，None 时使用当前激活模板。
+
+        Returns:
+            弹窗处理成功返回 True，否则 False。
+        """
+        if template_content is None:
+            template_content = self.template_manager.get_active_template()
+        row_selector = (
+            f"#pd-creator-rt-search-ui div.table-body > div:nth-child({row_index})"
+        )
+        try:
+            row_el = self.browser.find_element(f"css:{row_selector}", timeout=5)
+            if not row_el:
+                logger.warning(f"未找到表格行: {row_selector}")
+                self.console.print(f"[red]未找到表格行 (第 {row_index} 行)[/red]")
+                return False
+            self.browser.scroll_to_element(row_el)
+            time.sleep(0.2)
+            row_el.click(by_js=True)
+            time.sleep(0.5)
+            # 点击行后出现的 Send Proposal 按钮：优先按文本查找并点击
+            send_btn = self.browser.find_element("text:Send Proposal", timeout=10)
+            if not send_btn:
+                buttons = self.browser.find_elements('css:button[data-testid="uicl-button"]')
+                for btn in buttons or []:
+                    if not btn:
+                        continue
+                    if 'Send Proposal' in (btn.text or ''):
+                        send_btn = btn
+                        break
+            if not send_btn:
+                logger.warning("点击行后未找到 Send Proposal 按钮")
+                self.console.print("[red]点击行后未找到 Send Proposal 按钮[/red]")
+                return False
+            parent = send_btn.parent()
+            if parent:
+                self.browser.scroll_to_element(parent)
+                time.sleep(0.2)
+            send_btn.click(by_js=True)
+            time.sleep(0.5)
+            modal_success = self._handle_proposal_modal(selected_tab=None, template_content=template_content or "")
+            if modal_success:
+                logger.info(f"按表格行 {row_index} 发送 Proposal 成功")
+                self.console.print(f"[green]✓ 按表格第 {row_index} 行发送 Proposal 成功[/green]")
+            return modal_success
+        except Exception as e:
+            error_msg = str(e).lower()
+            if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                raise
+            logger.error(f"按表格行发送失败: {e}")
+            self.console.print(f"[red]按表格行发送失败: {e}[/red]")
+            return False
+
     def _get_selected_tab_value(self, btn) -> str | None:
         """获取按钮所在行的 selected-tab 值"""
         try:
@@ -2039,6 +2101,7 @@ class MenuUI:
         
         choices = [
             questionary.Choice("🚀 开始发送 Send Proposal", value="1"),
+            questionary.Choice("📋 按表格行发送 Proposal (pd-creator-rt-search-ui)", value="8"),
             questionary.Choice("📄 预览当前留言模板", value="2"),
             questionary.Choice("✏️  编辑留言模板", value="3"),
             questionary.Choice("🔢 设置发送数量", value="4"),
@@ -2514,6 +2577,8 @@ class ImpactRPA:
                 break
             elif choice == '1':
                 self._start_send_proposals()
+            elif choice == '8':
+                self._send_proposal_by_table_row()
             elif choice == '2':
                 self.menu.preview_template()
             elif choice == '3':
@@ -2579,6 +2644,54 @@ class ImpactRPA:
         try:
             result = self.proposal_sender.send_proposals(max_count, template)
             self._notify_proposal_run(result=result, error=None)
+        except Exception as e:
+            self._notify_proposal_run(result=None, error=e)
+
+    def _send_proposal_by_table_row(self):
+        """按 pd-creator-rt-search-ui 表格行发送 Proposal：点击指定行 → 点击 Send Proposal → 与 ProposalSender 弹窗流程一致"""
+        if not self.browser.is_connected():
+            if not self.browser.init():
+                self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+                return
+        self.console.print(Panel(
+            "[bold]请在浏览器中完成以下操作：[/bold]\n"
+            "1. 导航到包含 #pd-creator-rt-search-ui 表格的页面\n"
+            "2. 确保表格 div.table-body 已加载\n"
+            "3. 返回此处按任意键继续",
+            title="[cyan]提示[/cyan]",
+            border_style="cyan"
+        ))
+        questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
+        row_input = questionary.text(
+            "请输入要发送的行号 (1-based，对应 div:nth-child(N) 中的 N):",
+            default="1"
+        ).ask()
+        if row_input is None or row_input.strip() == "":
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+        try:
+            row_index = int(row_input.strip())
+        except ValueError:
+            self.console.print("[red]请输入有效的整数行号[/red]")
+            return
+        if row_index < 1:
+            self.console.print("[red]行号需大于等于 1[/red]")
+            return
+        template = self.template_manager.get_active_template()
+        if not template:
+            self.console.print("[bold yellow]⚠️  警告: 留言模板为空！[/bold yellow]")
+            if not questionary.confirm("是否继续?", default=False).ask():
+                return
+        else:
+            self.console.print("\n[bold]当前留言模板预览:[/bold]")
+            self.console.print(Panel(template, border_style="dim"))
+        if not questionary.confirm(f"确认对第 {row_index} 行发送 Proposal?", default=False).ask():
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+        try:
+            success = self.proposal_sender.send_proposal_by_table_row(row_index, template)
+            if success:
+                self._notify_proposal_run(result=SendProposalsResult(clicked_count=1, completed_all=True), error=None)
         except Exception as e:
             self._notify_proposal_run(result=None, error=e)
 
