@@ -861,8 +861,51 @@ class DatePicker:
             except Exception:
                 continue
         
+        # Impact 平台兜底：通过 Start Date 标签定位日期按钮
+        # 日期按钮显示格式如 "Jan 30, 2026"
+        try:
+            # 方法1：通过 Start Date 标签向上查找父级中的按钮
+            start_date_label = context.ele('text:Start Date', timeout=0.5)
+            if start_date_label:
+                parent = start_date_label.parent()
+                for _ in range(5):
+                    if parent:
+                        # 查找包含年份的按钮
+                        current_year = datetime.now().year
+                        btns = parent.eles('tag:button', timeout=0.3)
+                        for btn in btns or []:
+                            btn_text = btn.text or ''
+                            # 匹配日期格式：月份缩写 + 日 + 年
+                            if any(m in btn_text for m in self.IMPACT_DATE_BUTTON_MONTHS):
+                                if str(current_year) in btn_text or str(current_year + 1) in btn_text:
+                                    btn.click(by_js=True)
+                                    logger.info(f"已通过 Start Date 标签打开日期选择器: {btn_text}")
+                                    time.sleep(0.5)
+                                    return True
+                        parent = parent.parent()
+        except Exception as e:
+            logger.debug(f"通过 Start Date 标签查找失败: {e}")
+        
+        # 方法2：直接查找所有按钮，匹配日期格式
+        try:
+            current_year = datetime.now().year
+            all_buttons = context.eles('tag:button', timeout=0.5)
+            for btn in all_buttons or []:
+                btn_text = btn.text or ''
+                if any(m in btn_text for m in self.IMPACT_DATE_BUTTON_MONTHS):
+                    if str(current_year) in btn_text or str(current_year + 1) in btn_text:
+                        btn.click(by_js=True)
+                        logger.info(f"已通过日期格式匹配打开日期选择器: {btn_text}")
+                        time.sleep(0.5)
+                        return True
+        except Exception as e:
+            logger.debug(f"通过日期格式匹配查找失败: {e}")
+        
         logger.warning("未找到日期选择器按钮")
         return False
+    
+    # Impact 平台专用：日期按钮显示格式中的月份缩写
+    IMPACT_DATE_BUTTON_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
     
     def _is_disabled(self, ele) -> bool:
         """检查元素是否为禁用状态"""
