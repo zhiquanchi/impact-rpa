@@ -1380,9 +1380,14 @@ class ProposalSender:
             completed_all=(clicked_count >= max_count),
         )
 
-    def send_proposal_by_table_row(self, row_index: int, template_content: str | None = None) -> bool:
+    def send_proposal_by_table_row(
+        self,
+        row_index: int,
+        template_content: str | None = None,
+        skip_names: set[str] | None = None,
+    ) -> tuple[bool, str | None, str | None, bool]:
         """
-        在 pd-creator-rt-search-ui 表格中点击指定行，再点击出现的 Send Proposal 按钮，
+        在 Creator Search 表格中点击指定行，再点击出现的 Send Proposal 按钮，
         弹窗后的处理与 send_proposals 中点击 Send Proposal 之后一致（_handle_proposal_modal）。
 
         选择器: #pd-creator-rt-search-ui div.table-body > div:nth-child(N)，N 为行号（从 1 起）。
@@ -1390,25 +1395,41 @@ class ProposalSender:
         Args:
             row_index: 表格行号，对应 div:nth-child(row_index)，从 1 开始。
             template_content: 留言模板内容，None 时使用当前激活模板。
+            skip_names: 需要跳过的 Creator 名称集合（已发送过的）。
 
         Returns:
-            弹窗处理成功返回 True，否则 False。
+            (success, name, psi, skipped): 
+            - 成功返回 (True, name, psi_id, False)
+            - 跳过返回 (False, name, psi_id, True)
+            - 失败返回 (False, name, psi_id, False)
         """
         if template_content is None:
             template_content = self.template_manager.get_active_template()
         row_selector = (
             f"#pd-creator-rt-search-ui div.table-body > div:nth-child({row_index})"
         )
+        psi_id = None
+        creator_name = None
         try:
             row_el = self.browser.find_element(f"css:{row_selector}", timeout=5)
             if not row_el:
                 logger.warning(f"未找到表格行: {row_selector}")
                 self.console.print(f"[red]未找到表格行 (第 {row_index} 行)[/red]")
-                return False
+                return False, None, None, False
             self.browser.scroll_to_element(row_el)
             time.sleep(0.2)
             row_el.click(by_js=True)
             time.sleep(0.5)
+            
+            # 提取 Creator 名称和 psi ID
+            creator_name = self._extract_creator_name(row_el)
+            psi_id = self._extract_creator_psi()
+            
+            # 检查是否需要跳过（已发送过）
+            if skip_names and creator_name and creator_name in skip_names:
+                logger.info(f"第 {row_index} 行 [{creator_name}] 已发送过，跳过")
+                return False, creator_name, psi_id, True  # 跳过
+            
             # 点击行后出现的 Send Proposal 按钮：优先按文本查找并点击
             send_btn = self.browser.find_element("text:Send Proposal", timeout=10)
             if not send_btn:
@@ -1422,7 +1443,7 @@ class ProposalSender:
             if not send_btn:
                 logger.warning("点击行后未找到 Send Proposal 按钮")
                 self.console.print("[red]点击行后未找到 Send Proposal 按钮[/red]")
-                return False
+                return False, creator_name, psi_id, False
             parent = send_btn.parent()
             if parent:
                 self.browser.scroll_to_element(parent)
@@ -1430,17 +1451,309 @@ class ProposalSender:
             send_btn.click(by_js=True)
             time.sleep(0.5)
             modal_success = self._handle_proposal_modal(selected_tab=None, template_content=template_content or "")
+            
+            # 检测发送成功消息
             if modal_success:
-                logger.info(f"按表格行 {row_index} 发送 Proposal 成功")
-                self.console.print(f"[green]✓ 按表格第 {row_index} 行发送 Proposal 成功[/green]")
-            return modal_success
+                success_confirmed = self._wait_for_success_message()
+                if success_confirmed:
+                    logger.info(f"第 {row_index} 行 Creator [{creator_name}] (psi={psi_id}) 发送成功")
+                    return True, creator_name, psi_id, False
+                else:
+                    logger.warning(f"第 {row_index} 行未检测到成功消息")
+                    return True, creator_name, psi_id, False  # 弹窗处理成功但未检测到消息
+            return False, creator_name, psi_id, False
         except Exception as e:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 raise
             logger.error(f"按表格行发送失败: {e}")
             self.console.print(f"[red]按表格行发送失败: {e}[/red]")
-            return False
+            return False, creator_name, psi_id, False
+
+    def _extract_creator_name(self, row_el=None) -> str | None:
+        """从当前页面或表格行提取 Creator 的名称"""
+        try:
+            # 方法1：从表格行本身提取（优先）
+            if row_el:
+                # 查找行内的链接或标题文本
+                link = row_el.ele('tag:a', timeout=0.2)
+                if link:
+                    name = (link.text or '').strip()
+                    # 过滤掉太短或不像名字的文本
+                    if name and len(name) > 1 and not name.startswith('http'):
+                        logger.debug(f"从表格行提取到 Creator 名称: {name}")
+                        return name
+                # 查找行内第一个有意义的文本
+                for sel in ['css:[class*="name"]', 'css:span', 'css:div']:
+                    el = row_el.ele(sel, timeout=0.1)
+                    if el:
+                        name = (el.text or '').strip()
+                        if name and len(name) > 2 and len(name) < 100:
+                            logger.debug(f"从表格行提取到 Creator 名称: {name}")
+                            return name
+            
+            # 方法2：等待侧边栏加载后从标题提取
+            time.sleep(0.3)  # 等待侧边栏更新
+            selectors = [
+                'css:[class*="slideout"] h1',
+                'css:[class*="slideout"] h2',
+                'css:[class*="detail"] h1',
+                'css:[class*="detail"] h2',
+                'css:[class*="panel"] h1',
+                'css:[class*="panel"] h2',
+                'css:[class*="creator-name"]',
+                'css:[class*="partner-name"]',
+                'css:[class*="profile-name"]',
+            ]
+            for sel in selectors:
+                el = self.browser.find_element(sel, timeout=0.3)
+                if el:
+                    name = (el.text or '').strip()
+                    if name and len(name) > 1:
+                        logger.debug(f"提取到 Creator 名称: {name}")
+                        return name
+            
+            # 方法3：从 Send Proposal 按钮附近查找
+            send_btn = self.browser.find_element("text:Send Proposal", timeout=0.3)
+            if send_btn:
+                parent = send_btn.parent()
+                for _ in range(5):
+                    if parent:
+                        for tag in ['h1', 'h2', 'h3']:
+                            header = parent.ele(f'tag:{tag}', timeout=0.1)
+                            if header:
+                                name = (header.text or '').strip()
+                                if name and len(name) > 1:
+                                    logger.debug(f"提取到 Creator 名称: {name}")
+                                    return name
+                        parent = parent.parent()
+                        
+        except Exception as e:
+            logger.debug(f"提取 Creator 名称失败: {e}")
+        return None
+
+    def _extract_creator_psi(self) -> str | None:
+        """从当前页面提取 Creator 的 psi ID"""
+        try:
+            # 尝试从 URL 或页面元素中提取 psi
+            # 方法1：从侧边栏的链接中提取
+            slideout = self.browser.find_element('css:[class*="slideout"], [class*="detail"], [class*="panel"]', timeout=1)
+            if slideout:
+                # 查找包含 psi 的链接或属性
+                links = slideout.eles('tag:a', timeout=0.5)
+                for link in links or []:
+                    href = link.attr('href') or ''
+                    if 'psi=' in href:
+                        import re
+                        match = re.search(r'psi=([a-f0-9-]+)', href)
+                        if match:
+                            return match.group(1)
+            
+            # 方法2：从 iframe src 中提取
+            iframe = self.browser.find_element('css:iframe[src*="psi="]', timeout=0.5)
+            if iframe:
+                src = iframe.attr('src') or ''
+                import re
+                match = re.search(r'psi=([a-f0-9-]+)', src)
+                if match:
+                    return match.group(1)
+            
+            # 方法3：从页面上的隐藏元素或 data 属性提取
+            psi_el = self.browser.find_element('css:[data-psi], [data-partner-id]', timeout=0.5)
+            if psi_el:
+                return psi_el.attr('data-psi') or psi_el.attr('data-partner-id')
+                
+        except Exception as e:
+            logger.debug(f"提取 psi 失败: {e}")
+        return None
+
+    def _wait_for_success_message(self, timeout: float = 5.0) -> bool:
+        """等待 'Proposal sent successfully.' 成功消息出现"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                success_el = self.browser.find_element('text:Proposal sent successfully', timeout=0.5)
+                if success_el:
+                    logger.info("检测到发送成功消息")
+                    time.sleep(0.5)  # 等待消息显示完成
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.3)
+        return False
+
+    def send_proposals_creator_search(
+        self,
+        max_count: int = 10,
+        start_row: int = 1,
+        template_content: str | None = None,
+    ) -> SendProposalsResult:
+        """
+        Creator Search 批量发送：从指定行开始，依次发送 Proposal。
+        用 name 来区分已发送的 Creator，避免重复发送。
+        
+        Args:
+            max_count: 最大发送数量
+            start_row: 起始行号（从 1 开始）
+            template_content: 留言模板内容
+            
+        Returns:
+            SendProposalsResult: 发送结果
+        """
+        if template_content is None:
+            template_content = self.template_manager.get_active_template()
+        
+        # 加载已发送的 name 列表
+        sent_names = self._load_sent_names()
+        if sent_names:
+            self.console.print(f"[dim]已加载 {len(sent_names)} 个已发送的 Creator 记录[/dim]")
+        
+        sent_count = 0
+        sent_records: list[dict] = []  # 记录已发送的 Creator
+        skipped_count = 0  # 跳过的重复 Creator 数量
+        current_row = start_row
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        
+        self.console.print(f"\n[bold cyan]开始 Creator Search 批量发送 (目标: {max_count} 个，起始行: {start_row})...[/bold cyan]")
+        
+        while sent_count < max_count:
+            if consecutive_errors >= max_consecutive_errors:
+                self.console.print(f"[red]连续 {max_consecutive_errors} 次错误，停止发送[/red]")
+                break
+            
+            self.console.print(f"\n[dim]正在处理第 {current_row} 行...[/dim]")
+            
+            try:
+                success, creator_name, psi_id, was_skipped = self.send_proposal_by_table_row(
+                    current_row, template_content, skip_names=sent_names
+                )
+                
+                # 检查是否被跳过（已发送过）
+                if was_skipped:
+                    self.console.print(f"[yellow][SKIP] 第 {current_row} 行 [{creator_name}] 已发送过，跳过[/yellow]")
+                    skipped_count += 1
+                    current_row += 1
+                    self._close_creator_slideout()
+                    time.sleep(0.3)
+                    continue
+                
+                if success:
+                    sent_count += 1
+                    consecutive_errors = 0
+                    record = {
+                        'row': current_row,
+                        'name': creator_name,
+                        'psi': psi_id,
+                        'status': 'success',
+                        'timestamp': datetime.now().isoformat(),
+                    }
+                    sent_records.append(record)
+                    # 添加到已发送列表
+                    if creator_name:
+                        sent_names.add(creator_name)
+                    
+                    self.console.print(f"[green][OK] [{sent_count}/{max_count}] 第 {current_row} 行 [{creator_name or '未知'}] 发送成功[/green]")
+                    logger.info(f"发送成功: row={current_row}, name={creator_name}, psi={psi_id}")
+                    
+                    # 关闭侧边栏（如果有的话），准备下一个
+                    self._close_creator_slideout()
+                else:
+                    consecutive_errors += 1
+                    self.console.print(f"[yellow][SKIP] 第 {current_row} 行 [{creator_name or '未知'}] 发送失败，跳过[/yellow]")
+                
+                current_row += 1
+                time.sleep(0.5)  # 短暂等待页面稳定
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                    raise
+                consecutive_errors += 1
+                logger.error(f"处理第 {current_row} 行时出错: {e}")
+                self.console.print(f"[red][ERR] 第 {current_row} 行出错: {e}[/red]")
+                current_row += 1
+        
+        # 保存发送记录
+        self._save_sent_records(sent_records)
+        
+        if skipped_count > 0:
+            self.console.print(f"[dim]跳过了 {skipped_count} 个已发送的 Creator[/dim]")
+        
+        self.console.print(f"\n[bold cyan]===== 完成！共发送了 {sent_count} 个 Proposal =====[/bold cyan]")
+        logger.info(f"Creator Search 批量发送完成，共发送 {sent_count} 个")
+        
+        return SendProposalsResult(
+            clicked_count=sent_count,
+            completed_all=(sent_count >= max_count),
+        )
+
+    def _close_creator_slideout(self):
+        """关闭 Creator 详情侧边栏"""
+        try:
+            # 尝试点击关闭按钮
+            close_btn = self.browser.find_element('css:button[aria-label="Close"], button[class*="close"], [class*="slideout"] button[class*="close"]', timeout=0.5)
+            if close_btn:
+                close_btn.click(by_js=True)
+                time.sleep(0.3)
+                return
+            
+            # 尝试按 ESC
+            try:
+                self.browser.tab.actions.key_down('Escape').key_up('Escape').perform()
+                time.sleep(0.3)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"关闭侧边栏失败: {e}")
+
+    def _save_sent_records(self, records: list[dict]):
+        """保存发送记录到文件"""
+        if not records:
+            return
+        try:
+            import json
+            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            
+            filename = f"creator_search_sent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filepath = os.path.join(log_dir, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(records, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"发送记录已保存到: {filepath}")
+            self.console.print(f"[dim]发送记录已保存到: {filename}[/dim]")
+        except Exception as e:
+            logger.warning(f"保存发送记录失败: {e}")
+
+    def _load_sent_names(self) -> set[str]:
+        """加载所有已发送的 Creator 名称（从 logs 目录中的所有记录文件）"""
+        sent_names: set[str] = set()
+        try:
+            import json
+            import glob
+            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+            if not os.path.exists(log_dir):
+                return sent_names
+            
+            # 读取所有 creator_search_sent_*.json 文件
+            pattern = os.path.join(log_dir, 'creator_search_sent_*.json')
+            for filepath in glob.glob(pattern):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        records = json.load(f)
+                        for record in records:
+                            name = record.get('name')
+                            if name:
+                                sent_names.add(name)
+                except Exception as e:
+                    logger.debug(f"读取记录文件失败 {filepath}: {e}")
+            
+            logger.debug(f"已加载 {len(sent_names)} 个已发送的 Creator 名称")
+        except Exception as e:
+            logger.warning(f"加载已发送记录失败: {e}")
+        return sent_names
 
     def _get_selected_tab_value(self, btn) -> str | None:
         """获取按钮所在行的 selected-tab 值"""
@@ -2144,7 +2457,7 @@ class MenuUI:
         
         choices = [
             questionary.Choice("🚀 开始发送 Send Proposal", value="1"),
-            questionary.Choice("📋 按表格行发送 Proposal (pd-creator-rt-search-ui)", value="8"),
+            questionary.Choice("📋 Creator Search 批量发送", value="8"),
             questionary.Choice("📄 预览当前留言模板", value="2"),
             questionary.Choice("✏️  编辑留言模板", value="3"),
             questionary.Choice("🔢 设置发送数量", value="4"),
@@ -2691,35 +3004,61 @@ class ImpactRPA:
             self._notify_proposal_run(result=None, error=e)
 
     def _send_proposal_by_table_row(self):
-        """按 pd-creator-rt-search-ui 表格行发送 Proposal：点击指定行 → 点击 Send Proposal → 与 ProposalSender 弹窗流程一致"""
+        """Creator Search 批量发送：在 Creator Search 页面批量发送 Proposal"""
         if not self.browser.is_connected():
             if not self.browser.init():
                 self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
                 return
+        
         self.console.print(Panel(
             "[bold]请在浏览器中完成以下操作：[/bold]\n"
-            "1. 导航到包含 #pd-creator-rt-search-ui 表格的页面\n"
-            "2. 确保表格 div.table-body 已加载\n"
-            "3. 返回此处按任意键继续",
-            title="[cyan]提示[/cyan]",
+            "1. 导航到 Creator Search 页面 (creator-rt-searches.ihtml)\n"
+            "2. 设置好筛选条件并获取搜索结果\n"
+            "3. 确保搜索结果列表已加载\n"
+            "4. 返回此处按任意键继续",
+            title="[cyan]Creator Search 批量发送[/cyan]",
             border_style="cyan"
         ))
         questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
-        row_input = questionary.text(
-            "请输入要发送的行号 (1-based，对应 div:nth-child(N) 中的 N):",
-            default="1"
+        
+        # 获取发送数量
+        settings = self.config.load_settings()
+        default_count = settings.get('max_proposals', 10)
+        
+        count_input = questionary.text(
+            f"请输入要发送的数量 (默认 {default_count}):",
+            default=str(default_count)
         ).ask()
-        if row_input is None or row_input.strip() == "":
+        if count_input is None:
             self.console.print("[yellow]已取消[/yellow]")
             return
         try:
-            row_index = int(row_input.strip())
+            max_count = int(count_input.strip()) if count_input.strip() else default_count
+        except ValueError:
+            self.console.print("[red]请输入有效的数字[/red]")
+            return
+        if max_count < 1:
+            self.console.print("[red]数量需大于等于 1[/red]")
+            return
+        
+        # 获取起始行号
+        start_input = questionary.text(
+            "请输入起始行号 (从 1 开始，默认 1):",
+            default="1"
+        ).ask()
+        if start_input is None:
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+        try:
+            start_row = int(start_input.strip()) if start_input.strip() else 1
         except ValueError:
             self.console.print("[red]请输入有效的整数行号[/red]")
             return
-        if row_index < 1:
+        if start_row < 1:
             self.console.print("[red]行号需大于等于 1[/red]")
             return
+        
+        # 预览模板
         template = self.template_manager.get_active_template()
         if not template:
             self.console.print("[bold yellow]⚠️  警告: 留言模板为空！[/bold yellow]")
@@ -2728,13 +3067,20 @@ class ImpactRPA:
         else:
             self.console.print("\n[bold]当前留言模板预览:[/bold]")
             self.console.print(Panel(template, border_style="dim"))
-        if not questionary.confirm(f"确认对第 {row_index} 行发送 Proposal?", default=False).ask():
+        
+        # 确认发送
+        self.console.print(f"\n[cyan]即将从第 {start_row} 行开始，发送 {max_count} 个 Proposal[/cyan]")
+        if not questionary.confirm("确认开始批量发送?", default=False).ask():
             self.console.print("[yellow]已取消[/yellow]")
             return
+        
         try:
-            success = self.proposal_sender.send_proposal_by_table_row(row_index, template)
-            if success:
-                self._notify_proposal_run(result=SendProposalsResult(clicked_count=1, completed_all=True), error=None)
+            result = self.proposal_sender.send_proposals_creator_search(
+                max_count=max_count,
+                start_row=start_row,
+                template_content=template,
+            )
+            self._notify_proposal_run(result=result, error=None)
         except Exception as e:
             self._notify_proposal_run(result=None, error=e)
 
