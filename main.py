@@ -721,6 +721,12 @@ class DatePicker:
         self.console = console or Console()
         self._vision_handler = None  # 视觉 RPA 处理器，由外部注入
         self._navigation_cache = {}  # 缓存日期导航信息 {target_date_str: (months_diff, direction, max_attempts)}
+        self._selector_cache = {
+            'date_input': None,  # 缓存打开日期选择器的选择器
+            'prev_month': None,  # 缓存上个月按钮的选择器
+            'next_month': None,  # 缓存下个月按钮的选择器
+            'date_cell': None,   # 缓存日期单元格的选择器
+        }
     
     def set_vision_handler(self, handler):
         """
@@ -892,6 +898,24 @@ class DatePicker:
     
     def _open_date_picker(self, context) -> bool:
         """打开日期选择器"""
+        # 优先尝试缓存的选择器
+        if self._selector_cache['date_input']:
+            try:
+                btn = context.ele(self._selector_cache['date_input'], timeout=0.5)
+                if btn:
+                    try:
+                        btn.wait.clickable()
+                    except Exception:
+                        pass
+                    btn.click(by_js=None)
+                    logger.debug(f"使用缓存的选择器打开日期选择器: {self._selector_cache['date_input']}")
+                    time.sleep(0.5)
+                    return True
+            except Exception:
+                logger.debug("缓存的选择器失效，尝试其他选择器")
+                self._selector_cache['date_input'] = None
+        
+        # 遍历所有选择器
         for selector in self.DATE_INPUT_SELECTORS:
             try:
                 btn = context.ele(selector, timeout=0.5)
@@ -901,7 +925,8 @@ class DatePicker:
                     except Exception:
                         pass
                     btn.click(by_js=None)
-                    logger.info("已打开日期选择器")
+                    logger.info(f"已打开日期选择器，缓存选择器: {selector}")
+                    self._selector_cache['date_input'] = selector  # 缓存成功的选择器
                     time.sleep(0.5)
                     return True
             except Exception:
@@ -993,14 +1018,31 @@ class DatePicker:
     def _try_pick_date_in_view(self, context, target_day: str, target_iso: str) -> bool:
         """尝试在当前视图中选择目标日期"""
         date_cells = []
-        # 尝试所有选择器
-        for selector in self.DATE_CELL_SELECTORS:
+        
+        # 优先尝试缓存的选择器
+        if self._selector_cache['date_cell']:
             try:
-                cells = context.eles(selector)
+                cells = context.eles(self._selector_cache['date_cell'])
                 if cells:
                     date_cells.extend(cells)
+                    logger.debug(f"使用缓存的日期单元格选择器: {self._selector_cache['date_cell']}")
             except Exception:
-                continue
+                logger.debug("缓存的日期单元格选择器失效")
+                self._selector_cache['date_cell'] = None
+        
+        # 如果缓存没有结果，尝试所有选择器
+        if not date_cells:
+            for selector in self.DATE_CELL_SELECTORS:
+                try:
+                    cells = context.eles(selector)
+                    if cells:
+                        date_cells.extend(cells)
+                        # 缓存第一个成功的选择器
+                        if not self._selector_cache['date_cell']:
+                            self._selector_cache['date_cell'] = selector
+                            logger.debug(f"缓存日期单元格选择器: {selector}")
+                except Exception:
+                    continue
         
         if not date_cells:
             return False
@@ -1053,6 +1095,25 @@ class DatePicker:
     
     def _click_month_nav(self, context, direction: str) -> bool:
         """点击月份导航按钮"""
+        cache_key = 'prev_month' if direction == 'prev' else 'next_month'
+        
+        # 优先尝试缓存的选择器
+        if self._selector_cache[cache_key]:
+            try:
+                btn = context.ele(self._selector_cache[cache_key], timeout=0.3)
+                if btn:
+                    try:
+                        btn.click(by_js=True)
+                        time.sleep(0.4)
+                        logger.debug(f"使用缓存的选择器点击月份切换按钮: {self._selector_cache[cache_key]}")
+                        return True
+                    except Exception as e:
+                        logger.debug(f"缓存的选择器失效: {e}")
+                        self._selector_cache[cache_key] = None
+            except Exception:
+                self._selector_cache[cache_key] = None
+        
+        # 遍历所有选择器
         selectors = self.PREV_MONTH_SELECTORS if direction == 'prev' else self.NEXT_MONTH_SELECTORS
         
         for sel in selectors:
@@ -1062,7 +1123,8 @@ class DatePicker:
                     try:
                         btn.click(by_js=True)
                         time.sleep(0.4)
-                        logger.debug(f"成功点击月份切换按钮: {sel}")
+                        logger.debug(f"成功点击月份切换按钮，缓存选择器: {sel}")
+                        self._selector_cache[cache_key] = sel  # 缓存成功的选择器
                         return True
                     except Exception as e:
                         logger.debug(f"点击月份按钮失败 ({sel}): {e}")
