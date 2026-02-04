@@ -120,6 +120,39 @@ def test_selector_cache():
         console.print(f"[red]✗ 缓存共存异常[/red]")
         return False
     
+    # 测试 7: 测试 clear_selector_cache 方法
+    console.print(f"\n[yellow]测试 7: 测试清除选择器缓存方法[/yellow]")
+    picker5 = DatePicker(console)
+    
+    # 设置所有缓存
+    picker5._selector_cache['date_input'] = 'css:button[data-testid="test1"]'
+    picker5._selector_cache['prev_month'] = 'css:button[aria-label="Previous"]'
+    picker5._selector_cache['next_month'] = 'css:button[aria-label="Next"]'
+    picker5._selector_cache['date_cell'] = 'css:button'
+    
+    console.print(f"清除前: {picker5._selector_cache}")
+    
+    # 测试清除单个缓存
+    picker5.clear_selector_cache('date_input')
+    console.print(f"清除 date_input 后: {picker5._selector_cache}")
+    
+    if (picker5._selector_cache['date_input'] is None and
+        picker5._selector_cache['prev_month'] is not None):
+        console.print(f"[green]✓ 单个选择器缓存清除成功[/green]")
+    else:
+        console.print(f"[red]✗ 单个选择器缓存清除失败[/red]")
+        return False
+    
+    # 测试清除所有缓存
+    picker5.clear_selector_cache()
+    console.print(f"清除所有后: {picker5._selector_cache}")
+    
+    if all(v is None for v in picker5._selector_cache.values()):
+        console.print(f"[green]✓ 所有选择器缓存清除成功[/green]")
+    else:
+        console.print(f"[red]✗ 所有选择器缓存清除失败[/red]")
+        return False
+    
     console.print(f"\n[bold green]===== 所有测试通过！ =====[/bold green]")
     return True
 

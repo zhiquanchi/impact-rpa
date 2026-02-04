@@ -737,6 +737,31 @@ class DatePicker:
         """
         self._vision_handler = handler
     
+    def clear_selector_cache(self, selector_type: str | None = None) -> None:
+        """
+        清除选择器缓存
+        
+        Args:
+            selector_type: 要清除的缓存类型，可选值：
+                - 'date_input': 清除日期输入框选择器缓存
+                - 'prev_month': 清除上月按钮选择器缓存
+                - 'next_month': 清除下月按钮选择器缓存
+                - 'date_cell': 清除日期单元格选择器缓存
+                - None: 清除所有选择器缓存（默认）
+        """
+        if selector_type is None:
+            # 清除所有缓存
+            for key in self._selector_cache:
+                self._selector_cache[key] = None
+            logger.info("已清除所有选择器缓存")
+        elif selector_type in self._selector_cache:
+            # 清除指定类型的缓存
+            self._selector_cache[selector_type] = None
+            logger.info(f"已清除选择器缓存: {selector_type}")
+        else:
+            logger.warning(f"无效的选择器类型: {selector_type}")
+    
+    
     def precalculate_navigation(self, target_date: datetime, reference_date: datetime | None = None) -> None:
         """
         预先计算并缓存目标日期的导航信息
