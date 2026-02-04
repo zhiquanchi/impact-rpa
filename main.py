@@ -1643,6 +1643,11 @@ class ProposalSender:
         if template_content is None:
             template_content = self.template_manager.get_active_template()
         
+        # 预先计算并缓存日期选择器的导航信息（目标日期：明天）
+        target_date = datetime.now() + timedelta(days=1)
+        self.date_picker.precalculate_navigation(target_date)
+        logger.info(f"已预先计算日期导航信息，目标日期: {target_date.strftime('%Y-%m-%d')}")
+        
         # 加载已发送的 name 列表
         sent_names = self._load_sent_names()
         if sent_names:
