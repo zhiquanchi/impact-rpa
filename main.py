@@ -716,6 +716,7 @@ class DatePicker:
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
         self._vision_handler = None  # 视觉 RPA 处理器，由外部注入
+        self._navigation_cache = {}  # 缓存日期导航信息 {target_date_str: (months_diff, direction, max_attempts)}
     
     def set_vision_handler(self, handler):
         """
@@ -725,6 +726,34 @@ class DatePicker:
         handler(context, target_date: datetime, screenshot_path: str = None) -> bool
         """
         self._vision_handler = handler
+    
+    def precalculate_navigation(self, target_date: datetime, reference_date: datetime | None = None) -> None:
+        """
+        预先计算并缓存目标日期的导航信息
+        
+        Args:
+            target_date: 目标日期
+            reference_date: 参考日期（通常是当前日期），默认为 datetime.now()
+        """
+        if reference_date is None:
+            reference_date = datetime.now()
+        
+        target_iso = target_date.strftime('%Y-%m-%d')
+        
+        # 如果已经缓存，直接返回
+        if target_iso in self._navigation_cache:
+            logger.debug(f"日期导航信息已缓存: {target_iso}")
+            return
+        
+        # 计算月份差异
+        months_diff = (target_date.year - reference_date.year) * 12 + (target_date.month - reference_date.month)
+        direction = 'next' if months_diff >= 0 else 'prev'
+        max_attempts = max(abs(months_diff) + 2, 3)
+        
+        # 缓存结果
+        self._navigation_cache[target_iso] = (months_diff, direction, max_attempts)
+        logger.info(f"已缓存日期导航信息: {target_iso} -> months_diff={months_diff}, direction={direction}, max_attempts={max_attempts}")
+
     
     def select_date(
         self,
@@ -796,13 +825,19 @@ class DatePicker:
             if not self._open_date_picker(context):
                 return False
         
-        # 计算月份差异
-        now = datetime.now()
-        months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
-        direction = 'next' if months_diff >= 0 else 'prev'
+        # 尝试从缓存中获取导航信息
+        if target_iso in self._navigation_cache:
+            months_diff, direction, max_attempts = self._navigation_cache[target_iso]
+            logger.debug(f"使用缓存的日期导航信息: {target_iso} -> months_diff={months_diff}, direction={direction}")
+        else:
+            # 如果缓存中没有，则计算月份差异
+            now = datetime.now()
+            months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
+            direction = 'next' if months_diff >= 0 else 'prev'
+            max_attempts = max(abs(months_diff) + 2, 3)
+            logger.debug(f"计算日期导航信息: {target_iso} -> months_diff={months_diff}, direction={direction}")
         
         # 尝试在当前视图或切换月份后找到目标日期
-        max_attempts = max(abs(months_diff) + 2, 3)
         for step in range(max_attempts):
             if step > 0:
                 if not self._click_month_nav(context, direction):
@@ -1148,6 +1183,11 @@ class ProposalSender:
 
         if template_content is None:
             template_content = self.template_manager.get_active_template()
+        
+        # 预先计算并缓存日期选择器的导航信息（目标日期：明天）
+        target_date = datetime.now() + timedelta(days=1)
+        self.date_picker.precalculate_navigation(target_date)
+        logger.info(f"已预先计算日期导航信息，目标日期: {target_date.strftime('%Y-%m-%d')}")
         
         clicked_count = 0
         total_scrolls = 0
