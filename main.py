@@ -888,6 +888,9 @@ class DatePicker:
                             if self._try_pick_date_in_view(context, target_day, target_iso):
                                 return True
                     break
+            # 当目标月份与当前月份不同时，跳过初始视图的日期查找，先导航到目标月份再选择
+            if step == 0 and months_diff != 0:
+                continue
             if self._try_pick_date_in_view(context, target_day, target_iso):
                 return True
         
