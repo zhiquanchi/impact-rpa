@@ -38,6 +38,10 @@ class ConfigManager:
             # Proposal 弹窗内的 Template Term 下拉默认选择项
             # 例如："Commission Tier Terms" / "Public Terms" / "Ulanzi Terms"
             "template_term": "Commission Tier Terms",
+            # 是否在 Proposal 弹窗中填写 Partner Group 输入框（用于对联盟客分组）
+            "partner_group_enabled": False,
+            # Partner Group 的值，例如 "VIP" / "KOL" 等
+            "partner_group": "",
             # 发生异常时是否截图（页面+尽可能元素），截图保存在 logs/screenshots
             "screenshot_on_error": True,
             # 是否整页截图（True=整页，False=仅可视区域；整页对浏览器内核版本有要求且更慢）
@@ -1208,6 +1212,8 @@ class ProposalSender:
         self.modal_poll_interval = 0.2
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
+        self.partner_group_enabled = bool(settings.get("partner_group_enabled", False))
+        self.partner_group = (settings.get("partner_group") or "").strip()
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
@@ -1939,6 +1945,9 @@ class ProposalSender:
             if selected_tab:
                 self._input_tag_and_select(iframe, selected_tab)
             
+            if self.partner_group_enabled and self.partner_group:
+                self._input_partner_group(iframe, self.partner_group)
+            
             self._select_tomorrow_date(iframe)
             self._input_comment(iframe, template_content)
             self._submit_proposal(iframe)
@@ -2360,6 +2369,79 @@ class ProposalSender:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
     
+    def _input_partner_group(self, iframe, partner_group: str) -> bool:
+        """在 Partner Group 输入框中输入分组名称并选择"""
+        try:
+            search_text = partner_group.strip()
+            if not search_text:
+                return False
+
+            # 优先在 "Partner Group" 标签附近查找 tag-input 输入框
+            # 最多向上遍历 6 层父节点（与其他标签查找逻辑保持一致）
+            group_input = None
+            label = iframe.ele('text:Partner Group', timeout=2)
+            if label:
+                parent = label.parent()
+                for _ in range(6):
+                    if parent:
+                        inp = parent.ele(
+                            'css:input[data-testid="uicl-tag-input-text-input"]',
+                            timeout=0.3,
+                        )
+                        if inp:
+                            group_input = inp
+                            break
+                        parent = parent.parent()
+
+            # 兜底：弹窗中通常第一个 tag-input 是 category/tab，第二个才是 Partner Group；
+            # 如果只有一个 tag-input 则直接使用它。
+            if not group_input:
+                inputs = iframe.eles(
+                    'css:input[data-testid="uicl-tag-input-text-input"]'
+                )
+                if inputs and len(inputs) >= 2:
+                    logger.debug("Partner Group 兜底：使用页面中第二个 tag-input")
+                    group_input = inputs[1]
+                elif inputs:
+                    logger.debug("Partner Group 兜底：仅找到一个 tag-input，直接使用")
+                    group_input = inputs[0]
+
+            if not group_input:
+                logger.warning("未找到 Partner Group 输入框，跳过")
+                return False
+
+            group_input.click(by_js=True)
+            time.sleep(0.3)
+            group_input.input(search_text)
+            logger.info(f"已输入 Partner Group: {search_text}")
+            time.sleep(0.5)
+
+            dropdown = iframe.ele(
+                'css:[data-testid="uicl-tag-input-dropdown"]', timeout=3
+            )
+            if not dropdown:
+                logger.warning("未找到 Partner Group 下拉列表，跳过选择")
+                return False
+
+            # 注意：_4-15-1_Baf2T 是框架生成的类名，可能随版本变化；
+            # 优先尝试该选择器，失败时回退到通用的 <li> 列表项。
+            option_div = dropdown.ele('css:div._4-15-1_Baf2T', timeout=2)
+            if not option_div:
+                options = dropdown.eles('css:li')
+                if not options:
+                    logger.warning("Partner Group 下拉列表中没有选项，跳过选择")
+                    return False
+                option_div = options[0]
+
+            option_div.click(by_js=True)
+            logger.info(f"已选择 Partner Group: {option_div.text.strip()}")
+            time.sleep(0.3)
+            return True
+
+        except Exception as e:
+            logger.error(f"输入 Partner Group 失败: {e}")
+            return False
+
     def _select_tomorrow_date(self, iframe, strategies: list | None = None) -> bool:
         """
         选择明天的日期
@@ -2611,6 +2693,7 @@ class MenuUI:
             questionary.Choice("🔢 设置发送数量", value="4"),
             questionary.Choice("⚙️  查看当前设置", value="5"),
             questionary.Choice("🔧 设置 Template Term 下拉选项", value="6"),
+            questionary.Choice("🏷️  设置 Partner Group 分组", value="9"),
             questionary.Choice("🔄 检查并更新代码", value="7"),
             questionary.Choice("🚪  退出程序", value="0"),
         ]
@@ -2919,6 +3002,9 @@ class MenuUI:
         table.add_row("点击延迟", f"{settings['click_delay']} 秒")
         table.add_row("弹窗等待", f"{settings['modal_wait']} 秒")
         table.add_row("Template Term", (settings.get('template_term') or '').strip() or "(未设置)")
+        pg_enabled = bool(settings.get('partner_group_enabled', False))
+        pg_value = (settings.get('partner_group') or '').strip() or "(未设置)"
+        table.add_row("Partner Group 分组", f"{'✓ 启用' if pg_enabled else '✗ 禁用'}  值: {pg_value}")
         
         self.console.print(table)
         questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
@@ -3023,6 +3109,64 @@ class MenuUI:
             # 提示用户关闭弹窗
             self.console.print("[dim]提示：请手动关闭浏览器中的弹窗[/dim]")
     
+    def set_partner_group(self):
+        """设置 Partner Group 分组"""
+        settings = self.config.load_settings()
+        enabled = bool(settings.get('partner_group_enabled', False))
+        current = (settings.get('partner_group') or '').strip()
+
+        self.console.print(
+            f"[cyan]Partner Group 分组当前状态: "
+            f"[bold]{'✓ 启用' if enabled else '✗ 禁用'}[/bold]  "
+            f"值: [bold]{current or '(未设置)'}[/bold][/cyan]"
+        )
+
+        choices = [
+            questionary.Choice(
+                f"{'🔴 禁用' if enabled else '🟢 启用'} Partner Group 输入",
+                value="toggle",
+            ),
+            questionary.Choice("✏️  修改 Partner Group 值", value="edit"),
+            questionary.Choice("🔙 取消", value="cancel"),
+        ]
+
+        action = questionary.select(
+            "请选择操作:",
+            choices=choices,
+            style=questionary.Style([
+                ('highlighted', 'fg:cyan bold'),
+                ('pointer', 'fg:cyan bold'),
+            ])
+        ).ask()
+
+        if action is None or action == "cancel":
+            return
+
+        if action == "toggle":
+            new_enabled = not enabled
+            settings['partner_group_enabled'] = new_enabled
+            if self.config.save_settings(settings):
+                status = "✓ 启用" if new_enabled else "✗ 禁用"
+                self.console.print(f"[bold green]{status} Partner Group 输入[/bold green]")
+                if new_enabled and not current:
+                    self.console.print(
+                        "[yellow]提示：Partner Group 值尚未设置，请进入「修改 Partner Group 值」进行配置[/yellow]"
+                    )
+
+        elif action == "edit":
+            new_value = questionary.text(
+                "请输入 Partner Group 值（留空则清除）:",
+                default=current,
+            ).ask()
+            if new_value is None:
+                return
+            new_value = (new_value or '').strip()
+            settings['partner_group'] = new_value
+            if self.config.save_settings(settings):
+                self.console.print(
+                    f"[bold green]✓ Partner Group 已设置为: {new_value or '(已清除)'}[/bold green]"
+                )
+
     def check_and_update(self):
         """检查并更新代码"""
         try:
@@ -3093,6 +3237,8 @@ class ImpactRPA:
                 self.menu.view_settings()
             elif choice == '6':
                 self.menu.set_template_term()
+            elif choice == '9':
+                self.menu.set_partner_group()
             elif choice == '7':
                 self.menu.check_and_update()
             elif choice == '0':
