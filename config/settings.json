@@ -5,6 +5,7 @@
     "modal_wait": 20.0,
     "dry_run": false,
     "template_term": "Public Commission",
+    "input_partner_groups_tag": true,
     "screenshot_on_error": true,
     "screenshot_full_page": false,
     "vision_rpa": {

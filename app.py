@@ -59,6 +59,8 @@ class ImpactRPA:
                 self.menu.view_settings()
             elif choice == "6":
                 self.menu.set_template_term()
+            elif choice == "9":
+                self.menu.set_partner_groups_tag_input()
             elif choice == "7":
                 self.menu.check_and_update()
             elif choice == "0":

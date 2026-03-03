@@ -38,6 +38,8 @@ class ConfigManager:
             # Proposal 弹窗内的 Template Term 下拉默认选择项
             # 例如："Commission Tier Terms" / "Public Terms" / "Ulanzi Terms"
             "template_term": "Commission Tier Terms",
+            # 是否在 Proposal 弹窗内输入 Partner Groups 标签
+            "input_partner_groups_tag": True,
             # 发生异常时是否截图（页面+尽可能元素），截图保存在 logs/screenshots
             "screenshot_on_error": True,
             # 是否整页截图（True=整页，False=仅可视区域；整页对浏览器内核版本有要求且更慢）
@@ -268,7 +270,7 @@ class BrowserManager:
             try:
                 self.browser = Chromium()
                 try:
-                    impact_tab = self.browser.get_tab(url='impact')
+                    impact_tab = self.browser.get_tab(url='https://app.impact.com/secure/')
                 except Exception:
                     impact_tab = None
                 self.tab = impact_tab or self.browser.latest_tab
@@ -328,7 +330,7 @@ class BrowserManager:
             try:
                 self.browser = Chromium()
                 try:
-                    impact_tab = self.browser.get_tab(url='impact')
+                    impact_tab = self.browser.get_tab(url='https://app.impact.com/secure/')
                 except Exception:
                     impact_tab = None
                 self.tab = impact_tab or self.browser.latest_tab
@@ -1074,6 +1076,7 @@ class ProposalSender:
         self.modal_poll_interval = 0.2
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
+        self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
@@ -1917,7 +1920,7 @@ class ProposalSender:
             if not ok:
                 raise RuntimeError(f"template_term_not_found: {self.template_term}")
             
-            if selected_tab:
+            if self.input_partner_groups_tag and selected_tab:
                 self._input_tag_and_select(iframe, selected_tab)
             
             self._select_tomorrow_date(iframe)
@@ -2592,6 +2595,7 @@ class MenuUI:
             questionary.Choice("🔢 设置发送数量", value="4"),
             questionary.Choice("⚙️  查看当前设置", value="5"),
             questionary.Choice("🔧 设置 Template Term 下拉选项", value="6"),
+            questionary.Choice("🏷️  设置是否输入 Partner Groups 标签", value="9"),
             questionary.Choice("🔄 检查并更新代码", value="7"),
             questionary.Choice("🚪  退出程序", value="0"),
         ]
@@ -2900,6 +2904,7 @@ class MenuUI:
         table.add_row("点击延迟", f"{settings['click_delay']} 秒")
         table.add_row("弹窗等待", f"{settings['modal_wait']} 秒")
         table.add_row("Template Term", (settings.get('template_term') or '').strip() or "(未设置)")
+        table.add_row("输入 Partner Groups 标签", "是" if settings.get('input_partner_groups_tag', True) else "否")
         
         self.console.print(table)
         questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
@@ -2934,6 +2939,40 @@ class MenuUI:
         
         elif method == "browser":
             self._set_template_term_from_browser(settings, current)
+
+    def set_partner_groups_tag_input(self):
+        """设置是否在弹窗中输入 Partner Groups 标签。"""
+        settings = self.config.load_settings()
+        current = bool(settings.get('input_partner_groups_tag', True))
+
+        self.console.print(
+            f"[cyan]当前设置：输入 Partner Groups 标签 = [bold]{'是' if current else '否'}[/bold][/cyan]"
+        )
+
+        selected = questionary.select(
+            "请选择是否输入 Partner Groups 标签:",
+            choices=[
+                questionary.Choice("✅ 是（输入）", value=True),
+                questionary.Choice("🚫 否（跳过）", value=False),
+                questionary.Choice("🔙 取消", value=None),
+            ],
+            style=questionary.Style([
+                ('highlighted', 'fg:cyan bold'),
+                ('pointer', 'fg:cyan bold'),
+            ])
+        ).ask()
+
+        if selected is None:
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+
+        settings['input_partner_groups_tag'] = bool(selected)
+        if self.config.save_settings(settings):
+            if self.proposal_sender:
+                self.proposal_sender.input_partner_groups_tag = bool(selected)
+            self.console.print(
+                f"[bold green]✓ 已设置：输入 Partner Groups 标签 = {'是' if selected else '否'}[/bold green]"
+            )
     
     def _set_template_term_from_browser(self, settings: dict, current: str):
         """从浏览器弹窗获取 Template Term 选项并让用户选择"""
@@ -3074,6 +3113,8 @@ class ImpactRPA:
                 self.menu.view_settings()
             elif choice == '6':
                 self.menu.set_template_term()
+            elif choice == '9':
+                self.menu.set_partner_groups_tag_input()
             elif choice == '7':
                 self.menu.check_and_update()
             elif choice == '0':

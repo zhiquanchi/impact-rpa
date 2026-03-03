@@ -21,6 +21,7 @@ class ConfigManager:
             "modal_wait": 20.0,
             "dry_run": False,
             "template_term": "Commission Tier Terms",
+            "input_partner_groups_tag": True,
             "screenshot_on_error": True,
             "screenshot_full_page": False,
             "vision_rpa": {
