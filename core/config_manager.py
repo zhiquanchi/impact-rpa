@@ -1,0 +1,71 @@
+import json
+import os
+from loguru import logger
+
+
+class ConfigManager:
+    """配置管理类，负责处理所有配置文件的读写。"""
+
+    def __init__(self, base_dir: str | None = None):
+        self.base_dir = base_dir or os.path.dirname(os.path.dirname(__file__))
+        self.config_dir = os.path.join(self.base_dir, "config")
+        self.log_dir = os.path.join(self.base_dir, "logs")
+        self.template_file = os.path.join(self.config_dir, "template.txt")
+        self.templates_file = os.path.join(self.config_dir, "templates.json")
+        self.settings_file = os.path.join(self.config_dir, "settings.json")
+
+        self.default_settings = {
+            "max_proposals": 10,
+            "scroll_delay": 1.0,
+            "click_delay": 0.5,
+            "modal_wait": 20.0,
+            "dry_run": False,
+            "template_term": "Commission Tier Terms",
+            "screenshot_on_error": True,
+            "screenshot_full_page": False,
+            "vision_rpa": {
+                "enabled": False,
+                "api_key": "",
+                "base_url": "",
+                "model": "gpt-4o",
+                "max_tokens": 1024,
+                "temperature": 0.1,
+                "timeout": 30,
+                "browser_ui_offset_x": 0,
+                "browser_ui_offset_y": 0,
+            },
+        }
+
+        os.makedirs(self.config_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self._setup_logger()
+
+    def _setup_logger(self) -> None:
+        logger.add(
+            os.path.join(self.log_dir, "impact_rpa_{time:YYYY-MM-DD}.log"),
+            rotation="1 day",
+            retention="7 days",
+            level="INFO",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            encoding="utf-8",
+        )
+
+    def load_settings(self) -> dict:
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, "r", encoding="utf-8") as f:
+                    return {**self.default_settings, **json.load(f)}
+        except Exception as e:
+            logger.error(f"加载设置失败: {e}")
+        return self.default_settings.copy()
+
+    def save_settings(self, settings: dict) -> bool:
+        try:
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=4)
+            logger.info("设置保存成功")
+            return True
+        except Exception as e:
+            logger.error(f"保存设置失败: {e}")
+            return False
+

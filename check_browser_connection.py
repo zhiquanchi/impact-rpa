@@ -63,7 +63,7 @@ def check_browser_connection():
                 console.print(f"[dim]当前标签页: {url[:80]}...[/dim]")
             except:
                 pass
-            browser.close()
+            browser.quit()
             return True
     except Exception as e:
         console.print(f"[dim]方式 1 失败: {type(e).__name__}: {str(e)[:100]}[/dim]")
@@ -77,7 +77,7 @@ def check_browser_connection():
         tab = browser.latest_tab
         if tab:
             console.print("[green]✓ 成功连接到浏览器（ChromiumOptions）[/green]")
-            browser.close()
+            browser.quit()
             return True
     except Exception as e:
         console.print(f"[dim]方式 2 失败: {type(e).__name__}: {str(e)[:100]}[/dim]")
