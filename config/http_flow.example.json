@@ -1,0 +1,71 @@
+{
+    "base_url": "https://app.impact.com",
+    "verify_tls": true,
+    "timeout_seconds": 30,
+    "retry_count": 2,
+    "retry_delay_seconds": 1.0,
+    "max_count": 10,
+    "template_term": "Public Commission",
+    "comment_template": "Hi {{creator_name}}, we would like to collaborate with you.",
+    "default_category": "",
+    "cookie": "PASTE_BROWSER_COOKIE_HERE",
+    "common_headers": {
+        "User-Agent": "PASTE_USER_AGENT_HERE",
+        "Origin": "https://app.impact.com",
+        "Referer": "https://app.impact.com/"
+    },
+    "bootstrap_requests": [
+        "load_csrf"
+    ],
+    "per_creator_requests": [
+        "load_creator_context"
+    ],
+    "send_endpoint": "send_proposal",
+    "discovery": {
+        "endpoint": "search_creators",
+        "items_path": "data.items",
+        "id_field": "psi",
+        "name_field": "name",
+        "category_field": "selectedTab"
+    },
+    "creators": [
+        {
+            "psi": "11111111-1111-1111-1111-111111111111",
+            "name": "Example Creator",
+            "category": "Beauty"
+        }
+    ],
+    "endpoints": {
+        "load_csrf": {
+            "method": "GET",
+            "path": "/api/replace-with-real-endpoint",
+            "headers": {}
+        },
+        "search_creators": {
+            "method": "POST",
+            "path": "/api/replace-with-creator-search-endpoint",
+            "body": {
+                "page": 1,
+                "size": 50
+            }
+        },
+        "load_creator_context": {
+            "method": "GET",
+            "path": "/api/replace-with-creator-context-endpoint?psi={{psi}}"
+        },
+        "send_proposal": {
+            "method": "POST",
+            "path": "/api/replace-with-send-proposal-endpoint",
+            "headers": {
+                "X-CSRF-Token": "PASTE_TOKEN_HERE"
+            },
+            "body": {
+                "partnerId": "{{psi}}",
+                "templateTerm": "{{template_term}}",
+                "selectedTab": "{{category}}",
+                "deliveryDate": "{{tomorrow}}",
+                "comment": "{{comment}}"
+            }
+        }
+    }
+}

@@ -71,9 +71,11 @@ class ConfigManager:
             os.path.join(self.log_dir, 'impact_rpa_{time:YYYY-MM-DD}.log'),
             rotation='1 day',
             retention='7 days',
-            level='INFO',
-            format='{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}',
-            encoding='utf-8'
+            level='DEBUG',
+            format='{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}',
+            backtrace=True,
+            diagnose=True,
+            encoding='utf-8',
         )
     
     def load_settings(self) -> dict:
@@ -1223,12 +1225,12 @@ class ProposalSender:
         if template_content is None:
             template_content = self.template_manager.get_active_template()
         
-        clicked_count = 0
-        total_scrolls = 0
-        consecutive_errors = 0
-        pending_batch_buttons = 0
-        total_detected_buttons = 0
-        empty_scrolls = 0
+        clicked_count = 0             # 已成功点击的 Send Proposal 按钮数量
+        total_scrolls = 0             # 已执行的页面向下滚动次数（用于查找新按钮）
+        consecutive_errors = 0        # 连续发生的异常次数（如超限则尝试重连）
+        pending_batch_buttons = 0     # 尚未完成点击的按钮批次数，控制批量操作时逻辑
+        total_detected_buttons = 0    # 累计检测到的所有 Send Proposal 按钮总数
+        empty_scrolls = 0             # 连续未检测到新按钮的滚动次数（可能已无可点目标）
         
         # 根据目标数量动态调整最大滚动次数（至少为目标数量的3倍，但不超过固定上限）
         # 这样可以确保有足够的滚动次数来找到目标数量的按钮
@@ -1285,14 +1287,23 @@ class ProposalSender:
                 
                 available_buttons = []
                 newly_counted = 0
+                raw_buttons_count = len(send_proposal_buttons)
+                skipped_clicked_count = 0
+                already_counted_count = 0
+                mark_count_failed = 0
                 for btn in send_proposal_buttons:
                     if btn.attr(self.clicked_attr) == 'true':
+                        skipped_clicked_count += 1
                         continue
                     if btn.attr(self.counted_attr) != 'true':
                         if self._mark_button_state(btn, self.counted_attr):
                             pending_batch_buttons += 1
                             total_detected_buttons += 1
                             newly_counted += 1
+                        else:
+                            mark_count_failed += 1
+                    else:
+                        already_counted_count += 1
                     available_buttons.append(btn)
                 
                 if newly_counted > 0:
@@ -1306,7 +1317,22 @@ class ProposalSender:
                 
                 if not available_buttons:
                     if pending_batch_buttons <= 0:
-                        logger.debug("当前页面没有未发送的 Send Proposal 按钮，滚动加载更多...")
+                        if raw_buttons_count == 0:
+                            logger.debug(
+                                "当前页面未检测到任何 Send Proposal 按钮，准备滚动加载更多。"
+                            )
+                        elif skipped_clicked_count == raw_buttons_count:
+                            logger.debug(
+                                f"当前页面检测到 {raw_buttons_count} 个 Send Proposal 按钮，"
+                                f"但全部已标记为已点击({self.clicked_attr}=true)，准备滚动加载更多。"
+                            )
+                        else:
+                            logger.debug(
+                                f"当前页面检测到 {raw_buttons_count} 个 Send Proposal 按钮，"
+                                f"可用按钮为 0（已点击标记: {skipped_clicked_count}，"
+                                f"已计数未点击: {already_counted_count}，计数标记失败: {mark_count_failed}），"
+                                "准备滚动加载更多。"
+                            )
                         empty_scrolls += 1
                         # 连续多次空滚动仍未发现新按钮，则提前退出，避免看起来像“卡死/报错”
                         max_empty_scrolls = max(20, max_count * 2)
@@ -1319,14 +1345,26 @@ class ProposalSender:
                                 f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
                             )
                             break
+                        logger.debug(
+                            f"执行第 {total_scrolls + 1} 次滚动（空滚动累计: {empty_scrolls}/{max_empty_scrolls}，"
+                            f"已发送: {clicked_count}/{max_count}，累计检测到按钮: {total_detected_buttons}）。"
+                        )
                         if not self.browser.scroll_down(500):
                             consecutive_errors += 1
+                            logger.warning(
+                                f"滚动失败，连续错误计数 +1 -> {consecutive_errors} "
+                                f"(已发送: {clicked_count}/{max_count})"
+                            )
                             continue
                         time.sleep(self.scroll_delay)
                         total_scrolls += 1
                         continue
                     else:
-                        logger.debug("存在待发送计数但未找到按钮，重置计数以避免阻塞")
+                        logger.debug(
+                            f"存在待发送计数({pending_batch_buttons})但当前未找到可用按钮；"
+                            f"本轮检测到按钮总数 {raw_buttons_count}（已点击标记: {skipped_clicked_count}），"
+                            "重置待发送计数以避免阻塞。"
+                        )
                         pending_batch_buttons = 0
                         continue
                 
@@ -1417,7 +1455,10 @@ class ProposalSender:
                             consecutive_errors += 1
                             break
                         else:
-                            logger.error(f"点击按钮时出错: {e}")
+                            logger.exception(
+                                f"点击按钮时出错（已发送: {clicked_count}/{max_count}, "
+                                f"滚动次数: {total_scrolls}, 待发送计数: {pending_batch_buttons}）"
+                            )
                             self.console.print(f"[red]✗ 点击按钮时出错: {e}[/red]")
                         continue
                 
@@ -1452,7 +1493,11 @@ class ProposalSender:
                     logger.warning(f"检测到页面断开: {e}")
                     consecutive_errors += 1
                 else:
-                    logger.error(f"循环中出错: {e}")
+                    logger.exception(
+                        f"发送主循环异常（已发送: {clicked_count}/{max_count}, "
+                        f"滚动次数: {total_scrolls}, 连续错误: {consecutive_errors}, "
+                        f"空滚动: {empty_scrolls}, 待发送计数: {pending_batch_buttons}）"
+                    )
                     if 'template_term_not_found' in error_msg:
                         raise
                     consecutive_errors += 1
