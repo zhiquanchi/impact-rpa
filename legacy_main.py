@@ -2345,7 +2345,7 @@ class ProposalSender:
         return options
 
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
-        """在 tag-input 中逐字符输入，出现唯一匹配时立即选中。"""
+        """在 tag-input 中逐字符输入，完整输入后出现唯一匹配时立即选中。"""
         try:
             search_text = re.sub(r'\s+', '', selected_tab or "")
             if not search_text:
@@ -2385,34 +2385,18 @@ class ProposalSender:
                     logger.debug("Partner Group 下拉为空，继续尝试下一长度")
                     continue
 
-                # 先尝试完整目标值的精确匹配，避免唯一项不是目标值时误选
-                exact_matches = [opt for opt in options if opt[1] == target_norm]
-                if len(exact_matches) == 1:
-                    pick_text, _, pick_ele = exact_matches[0]
-                    pick_ele.click(by_js=True)
-                    self._partner_group_prefix_len_cache[cache_key] = min(
-                        input_len,
-                        self._partner_group_prefix_len_cache.get(cache_key, input_len),
-                    )
-                    logger.info(
-                        f"已选择 Partner Group: {pick_text}（前缀长度={input_len}，已缓存最短长度={self._partner_group_prefix_len_cache[cache_key]}）"
-                    )
-                    time.sleep(0.2)
-                    return True
-
-                prefix_matches = [opt for opt in options if opt[1].startswith(prefix_norm)]
-                if len(prefix_matches) == 1:
-                    pick_text, _, pick_ele = prefix_matches[0]
-                    pick_ele.click(by_js=True)
-                    self._partner_group_prefix_len_cache[cache_key] = min(
-                        input_len,
-                        self._partner_group_prefix_len_cache.get(cache_key, input_len),
-                    )
-                    logger.info(
-                        f"已选择 Partner Group: {pick_text}（前缀长度={input_len}，已缓存最短长度={self._partner_group_prefix_len_cache[cache_key]}）"
-                    )
-                    time.sleep(0.2)
-                    return True
+                # 只有完整输入整个名称才能选中（保证唯一匹配的条件）
+                if input_len == len(search_text):
+                    exact_matches = [opt for opt in options if opt[1] == target_norm]
+                    if len(exact_matches) == 1:
+                        pick_text, _, pick_ele = exact_matches[0]
+                        pick_ele.click(by_js=True)
+                        self._partner_group_prefix_len_cache[cache_key] = input_len
+                        logger.info(
+                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，已缓存）"
+                        )
+                        time.sleep(0.2)
+                        return True
 
             raise Exception(f"未找到唯一匹配项: {selected_tab}")
 
