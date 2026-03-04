@@ -644,12 +644,6 @@ class DatePicker:
     # 注意：这里不做 JS 写值，仅用于点击打开弹层
     DATE_INPUT_SELECTORS = [
         'css:button[data-testid="uicl-date-input"]',
-        'css:input[type="date"]',
-        'css:input[data-testid*="date"]',
-        'css:[data-testid*="date-input"]',
-        'css:.date-input',
-        'css:[class*="date-picker"] input',
-        'css:[class*="datepicker"] input',
     ]
     
     # 禁用状态的类名关键词（尽量通用；站点/组件不同会有差异）
@@ -665,56 +659,16 @@ class DatePicker:
     
     # 月份切换按钮选择器
     PREV_MONTH_SELECTORS = [
-        # 通用选择器
         'css:button[aria-label="Previous"]',
-        'css:button[aria-label*="Previous"]',
-        'css:button[aria-label*="Prev"]',
-        'css:button[aria-label*="previous"]',
-        'css:button[aria-label*="prev"]',
-        'css:[data-testid*="prev"]',
-        'css:[data-testid*="Prev"]',
-        'css:button.prev',
-        'css:.prev',
-        'css:[class*="prev"]',
-        'css:[class*="Prev"]',
-        'css:[class*="chevron-left"]',
-        'css:[class*="arrow-left"]',
-        'css:[class*="left-arrow"]',
-        'css:[class*="caret-left"]',
-        'css:button[title*="Previous"]',
-        'css:button[title*="previous"]',
-        'css:button[title*="Prev"]',
     ]
     
     NEXT_MONTH_SELECTORS = [
-        # 通用选择器
         'css:button[aria-label="Next"]',
-        'css:button[aria-label*="Next"]',
-        'css:button[aria-label*="Next month"]',
-        'css:button[aria-label*="next"]',
-        'css:[data-testid*="next"]',
-        'css:[data-testid*="Next"]',
-        'css:button.next',
-        'css:.next',
-        'css:[class*="next"]',
-        'css:[class*="Next"]',
-        'css:[class*="chevron-right"]',
-        'css:[class*="arrow-right"]',
-        'css:[class*="right-arrow"]',
-        'css:[class*="caret-right"]',
-        'css:button[title*="Next"]',
-        'css:button[title*="next"]',
     ]
     
     # 日期单元格选择器
     DATE_CELL_SELECTORS = [
-        # 通用选择器
-        'css:button',
-        'css:[role="gridcell"]',
-        'css:td',
-        'css:.day',
-        'css:[class*="day"]',
-        'css:[class*="date"]',
+        'css:td, .day, [class*="day"], [class*="date"]',
     ]
     
     def __init__(self, console: Console | None = None):
@@ -799,25 +753,34 @@ class DatePicker:
         if open_picker:
             if not self._open_date_picker(context):
                 return False
-        
+
+        # Impact 专用快速路径：当前视图直接按日期文本点击，尽量避免复杂遍历
+        if self._is_impact_modal_iframe(context):
+            if self._try_pick_date_in_view_fast_impact(context, target_day, target_iso):
+                return True
+
         # 计算月份差异
         now = datetime.now()
         months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
         direction = 'next' if months_diff >= 0 else 'prev'
-        
+
         # 尝试在当前视图或切换月份后找到目标日期
         max_attempts = max(abs(months_diff) + 2, 3)
+        # Impact 场景下日期通常在相邻月份内，限制尝试次数以减少多余导航
+        if self._is_impact_modal_iframe(context) and max_attempts > 4:
+            max_attempts = 4
+
         for step in range(max_attempts):
             if step > 0:
-                if not self._click_month_nav(context, direction):
+                if not self._click_month_nav(context, direction, fast_timeout=self._is_impact_modal_iframe(context)):
                     if step == 1 and direction == 'next':
-                        if self._click_month_nav(context, 'prev'):
+                        if self._click_month_nav(context, 'prev', fast_timeout=self._is_impact_modal_iframe(context)):
                             if self._try_pick_date_in_view(context, target_day, target_iso):
                                 return True
                     break
             if self._try_pick_date_in_view(context, target_day, target_iso):
                 return True
-        
+
         logger.warning(f"元素点击方式未找到目标日期: {target_iso}")
         return False
     
@@ -848,19 +811,86 @@ class DatePicker:
         
         return False
     
+    def _is_impact_modal_iframe(self, context) -> bool:
+        """判断是否为 Impact Proposal 弹窗 iframe"""
+        try:
+            data_testid = (context.attr('data-testid') or '').strip()
+            return data_testid == 'uicl-modal-iframe-content'
+        except Exception:
+            return False
+
+    def _try_pick_date_in_view_fast_impact(
+        self,
+        context,
+        target_day: str,
+        target_iso: str,
+    ) -> bool:
+        """Impact 专用快速路径：按日期文本直接点击"""
+        try:
+            cells = context.eles('css:td, .day, [class*="day"], [class*="date"]')
+        except Exception:
+            return False
+
+        if not cells:
+            return False
+
+        for cell in cells or []:
+            try:
+                if (cell.text or '').strip() != target_day:
+                    continue
+                try:
+                    cell.click(by_js=True)
+                except Exception:
+                    try:
+                        cell.click()
+                    except Exception:
+                        continue
+                logger.info(f"已通过快速路径选择日期: {target_iso}")
+                time.sleep(0.2)
+                return True
+            except Exception:
+                continue
+
+        return False
+
     def _open_date_picker(self, context) -> bool:
         """打开日期选择器"""
-        for selector in self.DATE_INPUT_SELECTORS:
+        is_impact = self._is_impact_modal_iframe(context)
+        timeout = 0.5
+        if is_impact:
+            timeout = 0.2
+            # Impact 快速路径：仅用 DevTools 确认的精确选择器，避免遍历多选择器
             try:
-                btn = context.ele(selector, timeout=0.5)
+                btn = context.ele(self.DATE_INPUT_SELECTORS[0], timeout=0.1)
                 if btn:
                     try:
-                        btn.wait.clickable()
+                        btn.click(by_js=True)
                     except Exception:
-                        pass
-                    btn.click(by_js=None)
+                        btn.click(by_js=None)
                     logger.info("已打开日期选择器")
-                    time.sleep(0.5)
+                    time.sleep(0.25)
+                    return True
+            except Exception:
+                pass
+
+        for selector in self.DATE_INPUT_SELECTORS:
+            try:
+                btn = context.ele(selector, timeout=timeout)
+                if btn:
+                    if is_impact:
+                        # Impact 场景：直接点击，避免额外的 clickable 等待
+                        try:
+                            btn.click(by_js=True)
+                        except Exception:
+                            btn.click(by_js=None)
+                    else:
+                        try:
+                            btn.wait.clickable()
+                        except Exception:
+                            pass
+                        btn.click(by_js=None)
+                    logger.info("已打开日期选择器")
+                    time.sleep(0.3 if is_impact else 0.5)
                     return True
             except Exception:
                 continue
@@ -869,14 +899,14 @@ class DatePicker:
         # 日期按钮显示格式如 "Jan 30, 2026"
         try:
             # 方法1：通过 Start Date 标签向上查找父级中的按钮
-            start_date_label = context.ele('text:Start Date', timeout=0.5)
+            start_date_label = context.ele('text:Start Date', timeout=0.3 if is_impact else 0.5)
             if start_date_label:
                 parent = start_date_label.parent()
                 for _ in range(5):
                     if parent:
                         # 查找包含年份的按钮
                         current_year = datetime.now().year
-                        btns = parent.eles('tag:button', timeout=0.3)
+                        btns = parent.eles('tag:button', timeout=0.2 if is_impact else 0.3)
                         for btn in btns or []:
                             btn_text = btn.text or ''
                             # 匹配日期格式：月份缩写 + 日 + 年
@@ -884,7 +914,7 @@ class DatePicker:
                                 if str(current_year) in btn_text or str(current_year + 1) in btn_text:
                                     btn.click(by_js=True)
                                     logger.info(f"已通过 Start Date 标签打开日期选择器: {btn_text}")
-                                    time.sleep(0.5)
+                                    time.sleep(0.3 if is_impact else 0.5)
                                     return True
                         parent = parent.parent()
         except Exception as e:
@@ -893,14 +923,14 @@ class DatePicker:
         # 方法2：直接查找所有按钮，匹配日期格式
         try:
             current_year = datetime.now().year
-            all_buttons = context.eles('tag:button', timeout=0.5)
+            all_buttons = context.eles('tag:button', timeout=0.3 if is_impact else 0.5)
             for btn in all_buttons or []:
                 btn_text = btn.text or ''
                 if any(m in btn_text for m in self.IMPACT_DATE_BUTTON_MONTHS):
                     if str(current_year) in btn_text or str(current_year + 1) in btn_text:
                         btn.click(by_js=True)
                         logger.info(f"已通过日期格式匹配打开日期选择器: {btn_text}")
-                        time.sleep(0.5)
+                        time.sleep(0.3 if is_impact else 0.5)
                         return True
         except Exception as e:
             logger.debug(f"通过日期格式匹配查找失败: {e}")
@@ -1009,17 +1039,19 @@ class DatePicker:
         
         return False
     
-    def _click_month_nav(self, context, direction: str) -> bool:
+    def _click_month_nav(self, context, direction: str, fast_timeout: bool = False) -> bool:
         """点击月份导航按钮"""
         selectors = self.PREV_MONTH_SELECTORS if direction == 'prev' else self.NEXT_MONTH_SELECTORS
-        
+        timeout = 0.15 if fast_timeout else 0.3
+        sleep_after = 0.25 if fast_timeout else 0.4
+
         for sel in selectors:
             try:
-                btn = context.ele(sel, timeout=0.3)
+                btn = context.ele(sel, timeout=timeout)
                 if btn:
                     try:
                         btn.click(by_js=True)
-                        time.sleep(0.4)
+                        time.sleep(sleep_after)
                         logger.debug(f"成功点击月份切换按钮: {sel}")
                         return True
                     except Exception as e:
@@ -1027,10 +1059,10 @@ class DatePicker:
                         continue
             except Exception:
                 continue
-        
+
         # 兜底：通过箭头字符查找
         try:
-            header_btns = context.eles('css:button', timeout=0.5)
+            header_btns = context.eles('css:button', timeout=0.3 if fast_timeout else 0.5)
             for btn in header_btns or []:
                 try:
                     btn_text = (btn.text or '').strip()
@@ -1038,11 +1070,11 @@ class DatePicker:
                         continue
                     if direction == 'prev' and any(c in btn_text for c in ('←', '<', '‹', '«')):
                         btn.click(by_js=True)
-                        time.sleep(0.4)
+                        time.sleep(sleep_after)
                         return True
                     elif direction == 'next' and any(c in btn_text for c in ('→', '>', '›', '»')):
                         btn.click(by_js=True)
-                        time.sleep(0.4)
+                        time.sleep(sleep_after)
                         return True
                 except Exception:
                     continue
