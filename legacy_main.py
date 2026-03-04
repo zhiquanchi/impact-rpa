@@ -1077,6 +1077,8 @@ class ProposalSender:
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
         self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
+        # 缓存每个 Partner Group 文本达到唯一匹配所需的最短输入长度
+        self._partner_group_prefix_len_cache: dict[str, int] = {}
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
@@ -2301,45 +2303,119 @@ class ProposalSender:
             logger.error(f"选择 Template Term 失败: {e}")
             return False
     
+    def _normalize_partner_group_text(self, text: str) -> str:
+        """规范化 Partner Group 文本用于匹配。"""
+        raw = text or ""
+        raw = re.sub(r'\s*\(\d+\)\s*$', '', raw)
+        raw = re.sub(r'\s+', '', raw)
+        return raw.strip().lower()
+
+    def _read_partner_group_dropdown_options(self, dropdown) -> list[tuple[str, str, object]]:
+        """读取 Partner Group 下拉选项，返回 (显示文本, 规范化文本, 元素)。"""
+        selectors = [
+            'css:li[role="option"]',
+            'css:div[role="option"]',
+            'css:div._4-15-1_Baf2T',
+            'css:li',
+        ]
+        options: list[tuple[str, str, object]] = []
+        seen: set[str] = set()
+
+        for selector in selectors:
+            try:
+                nodes = dropdown.eles(selector, timeout=0.2)
+            except Exception:
+                nodes = []
+            for node in nodes or []:
+                try:
+                    text = (node.text or "").strip()
+                    if not text:
+                        continue
+                    norm_text = self._normalize_partner_group_text(text)
+                    key = f"{norm_text}::{text}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    options.append((text, norm_text, node))
+                except Exception:
+                    continue
+            if options:
+                break
+
+        return options
+
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
-        """在 tag-input 中输入值并选择"""
+        """在 tag-input 中逐字符输入，出现唯一匹配时立即选中。"""
         try:
-            search_text = selected_tab.replace(" ", "")
-            
+            search_text = re.sub(r'\s+', '', selected_tab or "")
+            if not search_text:
+                raise Exception("selected_tab 为空，无法输入 Partner Group")
+
+            target_norm = self._normalize_partner_group_text(search_text)
+            cache_key = target_norm
+            cached_len = self._partner_group_prefix_len_cache.get(cache_key)
+
             tag_input = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=3)
             if not tag_input:
                 raise Exception("未找到 tag-input 输入框")
-            
-            tag_input.click(by_js=True)
-            time.sleep(0.3)
-            tag_input.input(search_text)
-            logger.info(f"已输入 tag: {search_text}")
-            time.sleep(0.5)
-            
-            dropdown = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=3)
-            if not dropdown:
-                raise Exception("未找到下拉列表")
-            
-            option_div = dropdown.ele('css:div._4-15-1_Baf2T', timeout=2)
-            if not option_div:
-                options = dropdown.eles('css:li')
+
+            input_lengths: list[int] = []
+            if cached_len and 1 <= cached_len <= len(search_text):
+                input_lengths.append(cached_len)
+            input_lengths.extend([i for i in range(1, len(search_text) + 1) if i not in input_lengths])
+
+            for input_len in input_lengths:
+                prefix = search_text[:input_len]
+                prefix_norm = self._normalize_partner_group_text(prefix)
+
+                tag_input.click(by_js=True)
+                time.sleep(0.1)
+                tag_input.clear()
+                tag_input.input(prefix)
+                logger.debug(f"Partner Group 尝试输入前缀: '{prefix}' (长度={input_len})")
+                time.sleep(0.25)
+
+                dropdown = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=2)
+                if not dropdown:
+                    logger.debug("Partner Group 下拉未出现，继续尝试下一长度")
+                    continue
+
+                options = self._read_partner_group_dropdown_options(dropdown)
                 if not options:
-                    raise Exception("下拉列表中没有选项")
-                option_div = options[0]
-            
-            option_text = option_div.text.strip()
-            logger.info(f"下拉选项文本: {option_text}")
-            
-            option_category = re.sub(r'\s*\(\d+\)\s*$', '', option_text).replace(" ", "")
-            
-            if search_text.lower() != option_category.lower():
-                raise Exception(f"输入值 '{search_text}' 与下拉选项 '{option_category}' 不匹配")
-            
-            option_div.click(by_js=True)
-            logger.info(f"已选择下拉选项: {option_text}")
-            time.sleep(0.3)
-            return True
-            
+                    logger.debug("Partner Group 下拉为空，继续尝试下一长度")
+                    continue
+
+                # 先尝试完整目标值的精确匹配，避免唯一项不是目标值时误选
+                exact_matches = [opt for opt in options if opt[1] == target_norm]
+                if len(exact_matches) == 1:
+                    pick_text, _, pick_ele = exact_matches[0]
+                    pick_ele.click(by_js=True)
+                    self._partner_group_prefix_len_cache[cache_key] = min(
+                        input_len,
+                        self._partner_group_prefix_len_cache.get(cache_key, input_len),
+                    )
+                    logger.info(
+                        f"已选择 Partner Group: {pick_text}（前缀长度={input_len}，已缓存最短长度={self._partner_group_prefix_len_cache[cache_key]}）"
+                    )
+                    time.sleep(0.2)
+                    return True
+
+                prefix_matches = [opt for opt in options if opt[1].startswith(prefix_norm)]
+                if len(prefix_matches) == 1:
+                    pick_text, _, pick_ele = prefix_matches[0]
+                    pick_ele.click(by_js=True)
+                    self._partner_group_prefix_len_cache[cache_key] = min(
+                        input_len,
+                        self._partner_group_prefix_len_cache.get(cache_key, input_len),
+                    )
+                    logger.info(
+                        f"已选择 Partner Group: {pick_text}（前缀长度={input_len}，已缓存最短长度={self._partner_group_prefix_len_cache[cache_key]}）"
+                    )
+                    time.sleep(0.2)
+                    return True
+
+            raise Exception(f"未找到唯一匹配项: {selected_tab}")
+
         except Exception as e:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
