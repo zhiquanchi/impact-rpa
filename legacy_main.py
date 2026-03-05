@@ -1109,6 +1109,8 @@ class ProposalSender:
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
         self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
         self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
+        # Partner Groups 相关调试日志开关
+        self.partner_groups_debug_logging = bool(settings.get("partner_groups_debug_logging", False))
         # 缓存每个 Partner Group 文本达到唯一匹配所需的最短输入长度
         self._partner_group_prefix_len_cache: dict[str, int] = {}
         self.counted_attr = 'data-impact-rpa-counted'
@@ -2342,7 +2344,12 @@ class ProposalSender:
         raw = re.sub(r'\s+', '', raw)
         return raw.strip().lower()
 
-    def _read_partner_group_dropdown_options(self, dropdown) -> list[tuple[str, str, object]]:
+    def _read_partner_group_dropdown_options(
+        self,
+        dropdown,
+        *,
+        emit_debug_log: bool | None = None,
+    ) -> list[tuple[str, str, object]]:
         """读取 Partner Group 下拉选项，返回 (显示文本, 规范化文本, 元素)。"""
         selectors = [
             'css:li[role="option"]',
@@ -2374,7 +2381,358 @@ class ProposalSender:
             if options:
                 break
 
+        # 如果基于特定 selector 仍然没有解析到任何可选项，做一次兜底：遍历下拉内所有子元素，
+        # 取有可见文本的元素作为候选项，按规范化文本+原始文本去重。
+        if not options:
+            try:
+                nodes = dropdown.eles('xpath:.//*', timeout=0.2)
+            except Exception:
+                nodes = []
+            for node in nodes or []:
+                try:
+                    text = (node.text or "").strip()
+                    if not text:
+                        continue
+                    norm_text = self._normalize_partner_group_text(text)
+                    key = f"{norm_text}::{text}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    options.append((text, norm_text, node))
+                except Exception:
+                    continue
+        should_log = (
+            self.partner_groups_debug_logging
+            if emit_debug_log is None
+            else (emit_debug_log and self.partner_groups_debug_logging)
+        )
+
+        if should_log:
+            # 打印下拉解析结果，便于分析未点击场景
+            try:
+                logger.info(
+                    f"[PartnerGroupsDebug] 解析下拉选项数量={len(options)}，详细列表={[t for t, _, _ in options]}"
+                )
+            except Exception:
+                # 日志本身不影响流程
+                pass
+
         return options
+
+    def _verify_partner_group_selected(self, iframe, target_norm: str, *, emit_failure_log: bool = False) -> bool:
+        """
+        验证 Partner Group 是否已经被成功选中（尽量避免误判）。
+
+        背景：
+        - DrissionPage 的 click() 通常不返回 True/False，成功与否主要靠是否抛异常；
+        - 但 Impact 的 UI 有时会出现「click 不报错但业务上未真正选中」或
+          「已经选中但我们用的 selector 找不到 chip」两类问题。
+
+        本函数尽量用“文本匹配 + 排除下拉 option 区域”的方式验证：
+        1) 定位 tag 输入容器（优先 data-testid，其次 class 回退）；
+        2) 扫描容器内所有有文本的节点，过滤掉 role=option/listbox 及其子树；
+        3) 对文本做规范化后与 target_norm 比较。
+        """
+        try:
+            base_container = None
+            # 优先：新版 tag-input 容器（注意：有些 UI 结构里 .iui-tag-input 可能只是 input-wrap，需要继续向上找）
+            for selector in (
+                'css:[data-testid="uicl-tag-input"]',
+                'css:.iui-tag-input',
+                'css:[class*="tag-input"]',
+            ):
+                try:
+                    base_container = iframe.ele(selector, timeout=0.6)
+                except Exception:
+                    base_container = None
+                if base_container:
+                    break
+
+            if not base_container:
+                # 兜底：用 input 的父节点作为容器
+                try:
+                    input_ele = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.8)
+                    if input_ele:
+                        base_container = input_ele.parent()
+                except Exception:
+                    base_container = None
+
+            if not base_container:
+                if self.partner_groups_debug_logging and emit_failure_log:
+                    logger.warning("[PartnerGroupsDebug] 未找到 tag 容器，无法验证是否已选中 Partner Group。")
+                return False
+
+            # 收集多个候选容器：base_container + 若干层父节点（以及 input 的父链），避免选到过窄的 input-wrap 导致误判
+            containers: list = []
+            seen_ids: set[int] = set()
+
+            def _add_container(ele) -> None:
+                if not ele:
+                    return
+                k = id(ele)
+                if k in seen_ids:
+                    return
+                seen_ids.add(k)
+                containers.append(ele)
+
+            cur = base_container
+            for _ in range(4):
+                _add_container(cur)
+                try:
+                    cur = cur.parent()
+                except Exception:
+                    break
+
+            try:
+                input_ele2 = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.6)
+            except Exception:
+                input_ele2 = None
+            if input_ele2:
+                cur = input_ele2.parent()
+                for _ in range(4):
+                    _add_container(cur)
+                    try:
+                        cur = cur.parent()
+                    except Exception:
+                        break
+
+            def _is_in_dropdown(node) -> bool:
+                cur = node
+                for _ in range(10):
+                    if not cur:
+                        break
+                    try:
+                        role = (cur.attr('role') or '').strip().lower()
+                        if role in ('option', 'listbox'):
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        dtid = (cur.attr('data-testid') or '').strip()
+                        if dtid == 'uicl-tag-input-dropdown':
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        cur = cur.parent()
+                    except Exception:
+                        break
+                return False
+
+            reports: list[dict] = []
+
+            for idx, container in enumerate(containers):
+                try:
+                    nodes = container.eles('xpath:.//*', timeout=0.4)
+                except Exception:
+                    nodes = []
+
+                scanned: int = 0
+                matched_text: str | None = None
+                samples: list[str] = []
+
+                for node in nodes or []:
+                    try:
+                        text = (node.text or "").strip()
+                    except Exception:
+                        continue
+                    if not text:
+                        continue
+                    if _is_in_dropdown(node):
+                        continue
+
+                    scanned += 1
+                    norm = self._normalize_partner_group_text(text)
+                    if self.partner_groups_debug_logging and emit_failure_log and len(samples) < 20:
+                        samples.append(f"{text} -> {norm}")
+                    if norm == target_norm:
+                        matched_text = text
+                        break
+
+                if matched_text is not None:
+                    if self.partner_groups_debug_logging:
+                        try:
+                            cls = (container.attr('class') or '').strip()
+                        except Exception:
+                            cls = ''
+                        logger.info(
+                            f"[PartnerGroupsDebug] 验证成功，在候选容器#{idx}找到目标: 原始文本='{matched_text}', "
+                            f"target_norm='{target_norm}', container_class='{cls}'"
+                        )
+                    return True
+
+                if emit_failure_log:
+                    try:
+                        cls = (container.attr('class') or '').strip()
+                    except Exception:
+                        cls = ''
+                    reports.append(
+                        {
+                            "idx": idx,
+                            "scanned": scanned,
+                            "class": cls,
+                            "samples": samples,
+                        }
+                    )
+
+            if self.partner_groups_debug_logging and emit_failure_log:
+                # 只输出前几个容器的摘要，避免日志过长
+                logger.warning(
+                    f"[PartnerGroupsDebug] 验证失败：未在任何候选容器找到目标，target_norm='{target_norm}'，"
+                    f"candidates={len(containers)}，reports={reports[:3]}"
+                )
+            return False
+        except Exception as e:
+            if self.partner_groups_debug_logging and emit_failure_log:
+                logger.error(f"[PartnerGroupsDebug] 验证 Partner Group 选中状态时出错: {e!r}")
+            return False
+
+    def _click_partner_group_option_and_verify(
+        self,
+        iframe,
+        dropdown,
+        pick_ele,
+        pick_text: str,
+        target_norm: str,
+        *,
+        wait_timeout: float = 2.0,
+    ) -> bool:
+        """
+        点击 Partner Group 下拉选项，并等待验证通过（避免 click() 无异常但业务未选中的情况）。
+
+        策略：
+        - 优先真实点击，再尝试 JS click()，最后用事件派发兜底；
+        - 点击后轮询验证：优先查找已选区域是否出现目标；如果找不到，则使用启发式：
+          「输入框已清空 且 下拉不再包含目标项」。
+        """
+
+        def _gather_targets(base_ele) -> list:
+            targets: list = []
+            seen: set[int] = set()
+            cur = base_ele
+            for _ in range(2):  # 当前元素 + 1 层父节点，避免点到过大的容器
+                if not cur:
+                    break
+                key = id(cur)
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(cur)
+                try:
+                    cur = cur.parent()
+                except Exception:
+                    break
+            return targets
+
+        def _refresh_base_ele() -> tuple[str, object]:
+            if not dropdown:
+                return pick_text, pick_ele
+            try:
+                opts = self._read_partner_group_dropdown_options(dropdown)
+            except Exception:
+                opts = []
+            # 优先按规范化文本匹配（更稳）
+            for t, n, e in opts or []:
+                if n == target_norm:
+                    return t, e
+            # 次选：按原始文本匹配
+            for t, n, e in opts or []:
+                if (t or "").strip() == (pick_text or "").strip():
+                    return t, e
+            if len(opts or []) == 1:
+                t, _, e = opts[0]
+                return t, e
+            return pick_text, pick_ele
+
+        def _get_tag_input_value() -> str:
+            try:
+                inp = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
+            except Exception:
+                inp = None
+            if not inp:
+                return ""
+            try:
+                return ((inp.attr('value') or "").strip())
+            except Exception:
+                return ""
+
+        def _dropdown_has_target() -> bool:
+            if not dropdown:
+                return True
+            try:
+                opts = self._read_partner_group_dropdown_options(dropdown, emit_debug_log=False)
+            except Exception:
+                opts = []
+            return any((n == target_norm) for _, n, _ in (opts or []))
+
+        def _wait_selected(timeout_s: float) -> bool:
+            deadline = time.time() + timeout_s
+            while time.time() < deadline:
+                if self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=False):
+                    return True
+                # 启发式：输入框清空 + 下拉不再包含目标项，通常意味着已添加 chip
+                if _get_tag_input_value() == "" and not _dropdown_has_target():
+                    if self.partner_groups_debug_logging:
+                        logger.info("[PartnerGroupsDebug] 验证通过：输入框已清空且下拉已不包含目标选项")
+                    return True
+                time.sleep(0.2)
+            # 只在最终失败时输出一次验证详情，避免轮询期间刷屏
+            if self.partner_groups_debug_logging:
+                self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=True)
+            return False
+
+        def _scroll_into_view(ele) -> None:
+            try:
+                ele.run_js('this.scrollIntoView({block:"center", inline:"nearest"});')
+            except Exception:
+                pass
+
+        click_methods = [
+            ("real", lambda e: e.click()),
+            ("js", lambda e: e.click(by_js=True)),
+            (
+                "dispatch",
+                lambda e: e.run_js(
+                    "this.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));"
+                    "this.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));"
+                    "this.dispatchEvent(new MouseEvent('click',{bubbles:true}));"
+                ),
+            ),
+        ]
+
+        # 两轮：先用原始元素尝试，再刷新一次下拉元素引用（防止 DOM 重渲染导致点到旧引用）
+        for refresh_round in range(2):
+            if refresh_round == 0:
+                base_text, base_ele = pick_text, pick_ele
+            else:
+                base_text, base_ele = _refresh_base_ele()
+
+            for target_ele in _gather_targets(base_ele):
+                _scroll_into_view(target_ele)
+                for method_name, do_click in click_methods:
+                    if self.partner_groups_debug_logging:
+                        logger.info(
+                            f"[PartnerGroupsDebug] 尝试点击选项 method={method_name}，option_text='{base_text}'"
+                        )
+                    try:
+                        do_click(target_ele)
+                    except Exception as e:
+                        if self.partner_groups_debug_logging:
+                            logger.warning(
+                                f"[PartnerGroupsDebug] 点击异常 method={method_name}，option_text='{base_text}'，error={e!r}"
+                            )
+                        continue
+                    if _wait_selected(wait_timeout):
+                        if self.partner_groups_debug_logging:
+                            logger.info(
+                                f"[PartnerGroupsDebug] 点击后验证成功 method={method_name}，option_text='{base_text}'"
+                            )
+                        return True
+                    if self.partner_groups_debug_logging:
+                        logger.warning(
+                            f"[PartnerGroupsDebug] 点击后验证仍失败 method={method_name}，option_text='{base_text}'"
+                        )
+
+        return False
 
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
         """在 tag-input 中逐字符输入，完整输入后出现唯一匹配时立即选中。"""
@@ -2398,48 +2756,120 @@ class ProposalSender:
 
             for input_len in input_lengths:
                 prefix = search_text[:input_len]
-                prefix_norm = self._normalize_partner_group_text(prefix)
 
                 tag_input.click(by_js=True)
                 time.sleep(0.1)
                 tag_input.clear()
                 tag_input.input(prefix)
-                logger.debug(f"Partner Group 尝试输入前缀: '{prefix}' (长度={input_len})")
+                if self.partner_groups_debug_logging:
+                    logger.info(
+                        f"[PartnerGroupsDebug] 尝试输入前缀: '{prefix}' (长度={input_len})，"
+                        f"selected_tab='{selected_tab}', cached_len={cached_len}, "
+                        f"cache_key='{cache_key}', 计划尝试长度序列={input_lengths}"
+                    )
+                else:
+                    logger.debug(f"Partner Group 尝试输入前缀: '{prefix}' (长度={input_len})")
                 time.sleep(0.25)
 
-                dropdown = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=2)
+                # 兼容旧版和新版 UI：
+                # - 旧版存在独立的 [data-testid=\"uicl-tag-input-dropdown\"] 容器；
+                # - 新版下拉选项直接挂在 tag-input 容器内（data-testid=\"uicl-tag-input\"）。
+                dropdown = None
+                try:
+                    dropdown = iframe.ele('css:[data-testid=\"uicl-tag-input-dropdown\"]', timeout=1)
+                except Exception:
+                    dropdown = None
+
                 if not dropdown:
-                    logger.debug("Partner Group 下拉未出现，继续尝试下一长度")
-                    continue
+                    try:
+                        parent = tag_input.parent()
+                        for _ in range(4):
+                            if not parent:
+                                break
+                            data_testid = (parent.attr('data-testid') or '').strip()
+                            if data_testid == 'uicl-tag-input':
+                                dropdown = parent
+                                break
+                            parent = parent.parent()
+                    except Exception:
+                        dropdown = None
+
+                if not dropdown:
+                    dropdown = tag_input
 
                 options = self._read_partner_group_dropdown_options(dropdown)
                 if not options:
-                    logger.debug("Partner Group 下拉为空，继续尝试下一长度")
+                    if self.partner_groups_debug_logging:
+                        logger.info(
+                            "[PartnerGroupsDebug] 当前前缀未解析到任何下拉选项，继续尝试更长输入；"
+                            f"prefix='{prefix}', input_len={input_len}"
+                        )
+                    else:
+                        logger.debug("Partner Group 下拉为空，继续尝试下一长度")
                     continue
 
-                # 只有完整输入整个名称才能选中（保证唯一匹配的条件）
+                # 每次输入后，如果下拉列表中只有一个元素，直接选中并缓存当前输入长度
+                if len(options) == 1:
+                    pick_text, _, pick_ele = options[0]
+                    if self.partner_groups_debug_logging:
+                        logger.info(
+                            f"[PartnerGroupsDebug] 检测到唯一选项，准备点击。"
+                            f"prefix='{prefix}', input_len={input_len}, pick_text='{pick_text}', "
+                            f"options_count={len(options)}"
+                        )
+                    ok = self._click_partner_group_option_and_verify(
+                        iframe=iframe,
+                        dropdown=dropdown,
+                        pick_ele=pick_ele,
+                        pick_text=pick_text,
+                        target_norm=target_norm,
+                        wait_timeout=2.0,
+                    )
+                    if not ok:
+                        raise Exception(f"Partner Group 选项点击后验证失败: {pick_text}")
+
+                    self._partner_group_prefix_len_cache[cache_key] = input_len
+                    logger.info(
+                        f"已选择 Partner Group: {pick_text}（当前输入长度={input_len}，仅 1 个可见选项，已缓存）"
+                    )
+                    time.sleep(0.2)
+                    return True
+
+                # 只有完整输入整个名称且存在规范化完全匹配时才按「精确匹配」逻辑选中
                 if input_len == len(search_text):
                     exact_matches = [opt for opt in options if opt[1] == target_norm]
+                    if self.partner_groups_debug_logging:
+                        logger.info(
+                            f"[PartnerGroupsDebug] 完整输入长度达到 search_text，准备走精确匹配逻辑；"
+                            f"prefix='{prefix}', target_norm='{target_norm}', "
+                            f"options_count={len(options)}, exact_match_count={len(exact_matches)}"
+                        )
                     if exact_matches:
                         pick_text, _, pick_ele = exact_matches[0]
-                        pick_ele.click(by_js=True)
+                        ok = self._click_partner_group_option_and_verify(
+                            iframe=iframe,
+                            dropdown=dropdown,
+                            pick_ele=pick_ele,
+                            pick_text=pick_text,
+                            target_norm=target_norm,
+                            wait_timeout=2.0,
+                        )
+                        if not ok:
+                            raise Exception(f"Partner Group 精确匹配项点击后验证失败: {pick_text}")
+
                         self._partner_group_prefix_len_cache[cache_key] = input_len
                         logger.info(
                             f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，找到 {len(exact_matches)} 个匹配，已缓存）"
                         )
                         time.sleep(0.2)
                         return True
-                    # 如果没有“规范化完全相等”的项，但仅剩 1 个可见选项，也直接选中它
-                    if len(options) == 1:
-                        pick_text, _, pick_ele = options[0]
-                        pick_ele.click(by_js=True)
-                        self._partner_group_prefix_len_cache[cache_key] = input_len
-                        logger.info(
-                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，仅 1 个可见选项，已缓存）"
-                        )
-                        time.sleep(0.2)
-                        return True
 
+            if self.partner_groups_debug_logging:
+                logger.warning(
+                    f"[PartnerGroupsDebug] 所有前缀尝试完毕，仍未找到可点击的唯一匹配项；"
+                    f"selected_tab='{selected_tab}', search_text='{search_text}', "
+                    f"尝试长度序列={input_lengths}, 当前缓存={self._partner_group_prefix_len_cache.get(cache_key)}"
+                )
             raise Exception(f"未找到唯一匹配项: {selected_tab}")
 
         except Exception as e:

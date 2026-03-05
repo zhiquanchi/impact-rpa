@@ -1,13 +1,14 @@
 {
-    "max_proposals": 10,
+    "max_proposals": 1,
     "scroll_delay": 1.0,
     "click_delay": 0.5,
     "modal_wait": 20.0,
     "dry_run": false,
-    "template_term": "Public Commission",
+    "template_term": "Public Terms",
     "input_partner_groups_tag": true,
     "screenshot_on_error": true,
     "screenshot_full_page": false,
+    "partner_groups_debug_logging": false,
     "vision_rpa": {
         "enabled": false,
         "api_key": "",

@@ -22,6 +22,8 @@ class ConfigManager:
             "dry_run": False,
             "template_term": "Commission Tier Terms",
             "input_partner_groups_tag": True,
+            # 是否输出 Partner Groups 下拉解析与点击的详细调试日志
+            "partner_groups_debug_logging": False,
             "screenshot_on_error": True,
             "screenshot_full_page": False,
             "vision_rpa": {
