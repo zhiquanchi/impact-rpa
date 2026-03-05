@@ -2420,12 +2420,22 @@ class ProposalSender:
                 # 只有完整输入整个名称才能选中（保证唯一匹配的条件）
                 if input_len == len(search_text):
                     exact_matches = [opt for opt in options if opt[1] == target_norm]
-                    if len(exact_matches) == 1:
+                    if exact_matches:
                         pick_text, _, pick_ele = exact_matches[0]
                         pick_ele.click(by_js=True)
                         self._partner_group_prefix_len_cache[cache_key] = input_len
                         logger.info(
-                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，已缓存）"
+                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，找到 {len(exact_matches)} 个匹配，已缓存）"
+                        )
+                        time.sleep(0.2)
+                        return True
+                    # 如果没有“规范化完全相等”的项，但仅剩 1 个可见选项，也直接选中它
+                    if len(options) == 1:
+                        pick_text, _, pick_ele = options[0]
+                        pick_ele.click(by_js=True)
+                        self._partner_group_prefix_len_cache[cache_key] = input_len
+                        logger.info(
+                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，仅 1 个可见选项，已缓存）"
                         )
                         time.sleep(0.2)
                         return True
