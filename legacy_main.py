@@ -2344,6 +2344,94 @@ class ProposalSender:
         raw = re.sub(r'\s+', '', raw)
         return raw.strip().lower()
 
+    def _calc_text_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算两个文本的相似度（0.0 ~ 1.0）。
+        用于处理下拉框选项和输入值不完全匹配但相似度高的情况。
+        """
+        # 规范化两个文本
+        norm1 = self._normalize_partner_group_text(text1)
+        norm2 = self._normalize_partner_group_text(text2)
+
+        if not norm1 or not norm2:
+            return 0.0
+
+        # 完全匹配
+        if norm1 == norm2:
+            return 1.0
+
+        # 包含匹配（一个包含另一个）
+        if norm1 in norm2 or norm2 in norm1:
+            longer = max(len(norm1), len(norm2))
+            shorter = min(len(norm1), len(norm2))
+            return 0.8 + 0.2 * (shorter / longer)  # 基础 0.8 分，根据长度比例加分
+
+        # 计算编辑距离相似度（Levenshtein 距离简化版）
+        # 使用最长公共子序列（LCS）的近似
+        len1, len2 = len(norm1), len(norm2)
+        max_len = max(len1, len2)
+        if max_len == 0:
+            return 1.0
+
+        # 简单的字符匹配计数
+        matches = sum(c1 == c2 for c1, c2 in zip(norm1, norm2))
+        # 考虑错位匹配
+        common_chars = len(set(norm1) & set(norm2))
+
+        # 综合分数：位置匹配占 60%，字符集合匹配占 40%
+        position_score = matches / max_len
+        char_set_score = common_chars / max_len
+        return position_score * 0.6 + char_set_score * 0.4
+
+    def _find_best_matching_option(
+        self,
+        options: list[tuple[str, str, object]],
+        target_text: str,
+        similarity_threshold: float = 0.7,
+    ) -> tuple[str, str, object] | None:
+        """
+        从选项列表中找到与目标文本最匹配的选项。
+
+        Args:
+            options: (显示文本, 规范化文本, 元素) 的列表
+            target_text: 目标文本
+            similarity_threshold: 相似度阈值，低于此值的选项会被过滤
+
+        Returns:
+            最匹配的选项，如果没有符合条件的返回 None
+        """
+        if not options:
+            return None
+
+        target_norm = self._normalize_partner_group_text(target_text)
+
+        # 计算每个选项的相似度
+        scored_options = []
+        for display_text, norm_text, element in options:
+            # 首先检查规范化文本是否完全匹配
+            if norm_text == target_norm:
+                return (display_text, norm_text, element)  # 完全匹配，直接返回
+
+            # 计算相似度
+            sim = self._calc_text_similarity(display_text, target_text)
+            if sim >= similarity_threshold:
+                scored_options.append((sim, display_text, norm_text, element))
+
+        if not scored_options:
+            return None
+
+        # 按相似度排序，返回最高的
+        scored_options.sort(key=lambda x: x[0], reverse=True)
+        best = scored_options[0]
+
+        if self.partner_groups_debug_logging:
+            logger.info(
+                f"[PartnerGroupsDebug] 最佳匹配选项: '{best[1]}' (相似度={best[0]:.2f})，"
+                f"目标='{target_text}'"
+            )
+
+        return (best[1], best[2], best[3])
+
     def _read_partner_group_dropdown_options(
         self,
         dropdown,
@@ -2351,10 +2439,13 @@ class ProposalSender:
         emit_debug_log: bool | None = None,
     ) -> list[tuple[str, str, object]]:
         """读取 Partner Group 下拉选项，返回 (显示文本, 规范化文本, 元素)。"""
+        # 注意：class 名如 _4-15-1_Baf2T、_4-48-2_Baf2T 是动态生成的，使用 [class*="Baf2T"] 匹配
+        # xpath://ul/li/div/div 对应用户提供的结构 @/html/body/div[12]/div/div/ul/li/div/div
         selectors = [
             'css:li[role="option"]',
             'css:div[role="option"]',
-            'css:div._4-15-1_Baf2T',
+            'css:[class*="Baf2T"]',
+            'xpath://ul/li/div/div',  # 用户提供的 XPath 模式（简化为相对路径）
             'css:li',
         ]
         options: list[tuple[str, str, object]] = []
@@ -2365,6 +2456,8 @@ class ProposalSender:
                 nodes = dropdown.eles(selector, timeout=0.2)
             except Exception:
                 nodes = []
+            if self.partner_groups_debug_logging and nodes:
+                logger.info(f"[PartnerGroupsDebug] Selector '{selector}' 找到 {len(nodes)} 个节点")
             for node in nodes or []:
                 try:
                     text = (node.text or "").strip()
@@ -2531,6 +2624,9 @@ class ProposalSender:
                 matched_text: str | None = None
                 samples: list[str] = []
 
+                best_similarity = 0.0
+                best_match_text = None
+
                 for node in nodes or []:
                     try:
                         text = (node.text or "").strip()
@@ -2545,9 +2641,26 @@ class ProposalSender:
                     norm = self._normalize_partner_group_text(text)
                     if self.partner_groups_debug_logging and emit_failure_log and len(samples) < 20:
                         samples.append(f"{text} -> {norm}")
+
+                    # 优先完全匹配
                     if norm == target_norm:
                         matched_text = text
                         break
+
+                    # 计算相似度，记录最佳匹配
+                    sim = self._calc_text_similarity(text, target_norm)
+                    if sim > best_similarity:
+                        best_similarity = sim
+                        best_match_text = text
+
+                # 没有完全匹配时，使用相似度阈值判断
+                if matched_text is None and best_similarity >= 0.8:
+                    matched_text = best_match_text
+                    if self.partner_groups_debug_logging:
+                        logger.info(
+                            f"[PartnerGroupsDebug] 验证时使用相似度匹配成功: "
+                            f"text='{best_match_text}', target='{target_norm}', sim={best_similarity:.2f}"
+                        )
 
                 if matched_text is not None:
                     if self.partner_groups_debug_logging:
@@ -2595,33 +2708,21 @@ class ProposalSender:
         pick_text: str,
         target_norm: str,
         *,
-        wait_timeout: float = 2.0,
+        wait_timeout: float = 0.5,
     ) -> bool:
         """
         点击 Partner Group 下拉选项，并等待验证通过（避免 click() 无异常但业务未选中的情况）。
 
-        策略：
-        - 优先真实点击，再尝试 JS click()，最后用事件派发兜底；
-        - 点击后轮询验证：优先查找已选区域是否出现目标；如果找不到，则使用启发式：
-          「输入框已清空 且 下拉不再包含目标项」。
+        策略（优化后）：
+        - 只使用传入的元素本身，不再尝试父元素（减少不必要尝试）
+        - 只保留 JS click 和真实点击两种方式，移除事件派发（加速）
+        - 减少默认等待时间到 0.5 秒（总超时从 12+ 秒降到 ~2 秒）
         """
 
         def _gather_targets(base_ele) -> list:
-            targets: list = []
-            seen: set[int] = set()
-            cur = base_ele
-            for _ in range(2):  # 当前元素 + 1 层父节点，避免点到过大的容器
-                if not cur:
-                    break
-                key = id(cur)
-                if key not in seen:
-                    seen.add(key)
-                    targets.append(cur)
-                try:
-                    cur = cur.parent()
-                except Exception:
-                    break
-            return targets
+            # 优化：只返回当前元素，不再尝试父元素
+            # 实际测试表明直接点击选项元素本身成功率已足够高
+            return [base_ele] if base_ele else []
 
         def _refresh_base_ele() -> tuple[str, object]:
             if not dropdown:
@@ -2630,14 +2731,17 @@ class ProposalSender:
                 opts = self._read_partner_group_dropdown_options(dropdown)
             except Exception:
                 opts = []
-            # 优先按规范化文本匹配（更稳）
+            # 优先按规范化文本完全匹配
             for t, n, e in opts or []:
                 if n == target_norm:
                     return t, e
-            # 次选：按原始文本匹配
-            for t, n, e in opts or []:
-                if (t or "").strip() == (pick_text or "").strip():
-                    return t, e
+            # 次选：使用相似度匹配（支持大小写、空格不一致等情况）
+            best_match = self._find_best_matching_option(
+                opts, pick_text, similarity_threshold=0.6
+            )
+            if best_match:
+                return best_match[0], best_match[2]
+            # 兜底：如果只有一个选项，直接返回
             if len(opts or []) == 1:
                 t, _, e = opts[0]
                 return t, e
@@ -2656,25 +2760,95 @@ class ProposalSender:
                 return ""
 
         def _dropdown_has_target() -> bool:
-            if not dropdown:
-                return True
+            # 尝试使用传入的 dropdown，如果失败则从 iframe 重新查找
+            dropdown_ele = dropdown
+            if not dropdown_ele:
+                try:
+                    dropdown_ele = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=0.3)
+                except Exception:
+                    try:
+                        tag_input = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
+                        dropdown_ele = tag_input.ele('xpath:ancestor::*[@data-testid="uicl-tag-input"][1]', timeout=0.2)
+                    except Exception:
+                        dropdown_ele = None
+
+            if not dropdown_ele:
+                if self.partner_groups_debug_logging:
+                    logger.info("[PartnerGroupsDebug] 无法找到 dropdown 元素")
+                return False
+
             try:
-                opts = self._read_partner_group_dropdown_options(dropdown, emit_debug_log=False)
-            except Exception:
+                opts = self._read_partner_group_dropdown_options(dropdown_ele, emit_debug_log=False)
+            except Exception as e:
+                if self.partner_groups_debug_logging:
+                    logger.warning(f"[PartnerGroupsDebug] 读取下拉选项时出错: {e!r}")
                 opts = []
-            return any((n == target_norm) for _, n, _ in (opts or []))
+
+            if not opts:
+                if self.partner_groups_debug_logging:
+                    logger.info("[PartnerGroupsDebug] 下拉列表为空或无法读取")
+                return False
+
+            # 使用相似度匹配，而不是完全相等
+            for display_text, norm_text, _ in opts:
+                # 完全匹配
+                if norm_text == target_norm:
+                    if self.partner_groups_debug_logging:
+                        logger.info(f"[PartnerGroupsDebug] 下拉中仍包含目标(完全匹配): '{display_text}'")
+                    return True
+                # 相似度匹配
+                sim = self._calc_text_similarity(display_text, target_norm)
+                if sim >= 0.8:
+                    if self.partner_groups_debug_logging:
+                        logger.info(f"[PartnerGroupsDebug] 下拉中仍包含目标(相似度{sim:.2f}): '{display_text}'")
+                    return True
+
+            if self.partner_groups_debug_logging:
+                logger.info(f"[PartnerGroupsDebug] 下拉中不包含目标选项，当前选项: {[t for t, _, _ in opts]}")
+            return False
 
         def _wait_selected(timeout_s: float) -> bool:
             deadline = time.time() + timeout_s
+            click_time = time.time()
             while time.time() < deadline:
+                # 方式1：chip 已存在，直接成功（最可靠）
                 if self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=False):
+                    # 验证通过：chip 已存在，主动清空输入框（防止组件未自动清空）
+                    try:
+                        inp = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
+                        if inp:
+                            # 使用 JS 清空输入框，确保干净
+                            inp.run_js("this.value=''; this.dispatchEvent(new Event('input', {bubbles:true}));")
+                            if self.partner_groups_debug_logging:
+                                logger.info("[PartnerGroupsDebug] 选中后已主动清空输入框")
+                    except Exception as e:
+                        if self.partner_groups_debug_logging:
+                            logger.warning(f"[PartnerGroupsDebug] 清空输入框时出错: {e!r}")
                     return True
-                # 启发式：输入框清空 + 下拉不再包含目标项，通常意味着已添加 chip
-                if _get_tag_input_value() == "" and not _dropdown_has_target():
+
+                # 方式2：输入框清空 + 下拉不再包含目标项
+                input_empty = _get_tag_input_value() == ""
+                dropdown_cleared = not _dropdown_has_target()
+
+                if self.partner_groups_debug_logging:
+                    logger.info(f"[PartnerGroupsDebug] 验证中: input_empty={input_empty}, dropdown_cleared={dropdown_cleared}")
+
+                if input_empty and dropdown_cleared:
                     if self.partner_groups_debug_logging:
                         logger.info("[PartnerGroupsDebug] 验证通过：输入框已清空且下拉已不包含目标选项")
                     return True
-                time.sleep(0.2)
+
+                # 方式3：点击后等待足够时间（给 DOM 更新），且输入框已清空
+                # 某些情况下 dropdown 不会立即消失，但 chip 已添加
+                if input_empty and (time.time() - click_time) >= 0.3:
+                    # 再检查一次 chip 是否存在（可能在 dropdown 没消失时已添加）
+                    if self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=False):
+                        if self.partner_groups_debug_logging:
+                            logger.info("[PartnerGroupsDebug] 验证通过：点击后延迟检查 chip 存在")
+                        return True
+
+                time.sleep(0.1)  # 优化：减少轮询间隔，加快验证速度
+
             # 只在最终失败时输出一次验证详情，避免轮询期间刷屏
             if self.partner_groups_debug_logging:
                 self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=True)
@@ -2686,17 +2860,11 @@ class ProposalSender:
             except Exception:
                 pass
 
+        # 优化：只保留两种最常用的点击方式，移除 dispatch（减少尝试次数）
+        # JS 点击通常最可靠（避免遮挡问题），真实点击作为兜底
         click_methods = [
-            ("real", lambda e: e.click()),
             ("js", lambda e: e.click(by_js=True)),
-            (
-                "dispatch",
-                lambda e: e.run_js(
-                    "this.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));"
-                    "this.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));"
-                    "this.dispatchEvent(new MouseEvent('click',{bubbles:true}));"
-                ),
-            ),
+            ("real", lambda e: e.click()),
         ]
 
         # 两轮：先用原始元素尝试，再刷新一次下拉元素引用（防止 DOM 重渲染导致点到旧引用）
@@ -2780,17 +2948,10 @@ class ProposalSender:
                 except Exception:
                     dropdown = None
 
+                # 优化：使用 xpath 直接查找祖先元素，代替循环 4 层 parent()
                 if not dropdown:
                     try:
-                        parent = tag_input.parent()
-                        for _ in range(4):
-                            if not parent:
-                                break
-                            data_testid = (parent.attr('data-testid') or '').strip()
-                            if data_testid == 'uicl-tag-input':
-                                dropdown = parent
-                                break
-                            parent = parent.parent()
+                        dropdown = tag_input.ele('xpath:ancestor::*[@data-testid="uicl-tag-input"][1]', timeout=0.3)
                     except Exception:
                         dropdown = None
 
@@ -2823,7 +2984,7 @@ class ProposalSender:
                         pick_ele=pick_ele,
                         pick_text=pick_text,
                         target_norm=target_norm,
-                        wait_timeout=2.0,
+                        wait_timeout=0.5,
                     )
                     if not ok:
                         raise Exception(f"Partner Group 选项点击后验证失败: {pick_text}")
@@ -2835,31 +2996,48 @@ class ProposalSender:
                     time.sleep(0.2)
                     return True
 
-                # 只有完整输入整个名称且存在规范化完全匹配时才按「精确匹配」逻辑选中
+                # 完整输入整个名称后，使用相似度匹配查找最佳选项
+                # 支持大小写不一致、空格不一致等情况
                 if input_len == len(search_text):
+                    # 首先尝试完全匹配
                     exact_matches = [opt for opt in options if opt[1] == target_norm]
-                    if self.partner_groups_debug_logging:
-                        logger.info(
-                            f"[PartnerGroupsDebug] 完整输入长度达到 search_text，准备走精确匹配逻辑；"
-                            f"prefix='{prefix}', target_norm='{target_norm}', "
-                            f"options_count={len(options)}, exact_match_count={len(exact_matches)}"
-                        )
                     if exact_matches:
                         pick_text, _, pick_ele = exact_matches[0]
+                        if self.partner_groups_debug_logging:
+                            logger.info(
+                                f"[PartnerGroupsDebug] 完整输入且找到完全匹配项；"
+                                f"target_norm='{target_norm}', pick_text='{pick_text}'"
+                            )
+                    else:
+                        # 没有完全匹配时，使用相似度匹配找最佳选项
+                        best_match = self._find_best_matching_option(
+                            options, selected_tab, similarity_threshold=0.6
+                        )
+                        if best_match:
+                            pick_text, _, pick_ele = best_match
+                            if self.partner_groups_debug_logging:
+                                logger.info(
+                                    f"[PartnerGroupsDebug] 完整输入且找到相似度匹配项；"
+                                    f"target='{selected_tab}', pick_text='{pick_text}'"
+                                )
+                        else:
+                            pick_text, pick_ele = None, None
+
+                    if pick_text and pick_ele:
                         ok = self._click_partner_group_option_and_verify(
                             iframe=iframe,
                             dropdown=dropdown,
                             pick_ele=pick_ele,
                             pick_text=pick_text,
                             target_norm=target_norm,
-                            wait_timeout=2.0,
+                            wait_timeout=0.5,
                         )
                         if not ok:
-                            raise Exception(f"Partner Group 精确匹配项点击后验证失败: {pick_text}")
+                            raise Exception(f"Partner Group 匹配项点击后验证失败: {pick_text}")
 
                         self._partner_group_prefix_len_cache[cache_key] = input_len
                         logger.info(
-                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，找到 {len(exact_matches)} 个匹配，已缓存）"
+                            f"已选择 Partner Group: {pick_text}（完整输入={input_len}字符，已缓存）"
                         )
                         time.sleep(0.2)
                         return True
