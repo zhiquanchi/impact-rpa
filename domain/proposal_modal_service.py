@@ -18,12 +18,13 @@ class ProposalModalService:
             if not ok:
                 raise RuntimeError(f"template_term_not_found: {self.sender.template_term}")
 
+            self.sender._select_tomorrow_date(iframe)
+            self.sender._input_comment(iframe, template_content)
+
             should_input_partner_groups = bool(getattr(self.sender, "input_partner_groups_tag", True))
             if should_input_partner_groups and selected_tab:
                 self.sender._input_tag_and_select(iframe, selected_tab)
 
-            self.sender._select_tomorrow_date(iframe)
-            self.sender._input_comment(iframe, template_content)
             self.sender._submit_proposal(iframe)
             return True
         except Exception as e:

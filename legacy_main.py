@@ -1985,12 +1985,13 @@ class ProposalSender:
             ok = self._select_template_term(iframe, self.template_term)
             if not ok:
                 raise RuntimeError(f"template_term_not_found: {self.template_term}")
-            
-            if self.input_partner_groups_tag and selected_tab:
-                self._input_tag_and_select(iframe, selected_tab)
-            
+
             self._select_tomorrow_date(iframe)
             self._input_comment(iframe, template_content)
+
+            if self.input_partner_groups_tag and selected_tab:
+                self._input_tag_and_select(iframe, selected_tab)
+
             self._submit_proposal(iframe)
             return True
             
