@@ -13,6 +13,8 @@ class ConfigManager:
         self.template_file = os.path.join(self.config_dir, "template.txt")
         self.templates_file = os.path.join(self.config_dir, "templates.json")
         self.settings_file = os.path.join(self.config_dir, "settings.json")
+        # 可选：由组合根注入，用于配置热更新
+        self.store = None
 
         self.default_settings = {
             "max_proposals": 10,
@@ -67,6 +69,11 @@ class ConfigManager:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)
             logger.info("设置保存成功")
+            try:
+                if self.store is not None:
+                    self.store.force_reload_settings()
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"保存设置失败: {e}")

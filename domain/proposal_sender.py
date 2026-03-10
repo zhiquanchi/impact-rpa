@@ -10,9 +10,10 @@ from domain.wait_utils import wait_until
 class ProposalSender(LegacyProposalSender):
     """在保留原行为的基础上，增加服务化边界与公开接口。"""
 
-    def __init__(self, browser, template_manager, console, config):
+    def __init__(self, browser, template_manager, console, config, config_store=None):
         super().__init__(browser, template_manager, console, config)
         self.modal_service = ProposalModalService(self)
+        self._config_store = config_store
 
     def get_template_term_options(self, iframe) -> list[str]:
         """菜单层可调用的公开方法，替代跨层访问私有方法。"""

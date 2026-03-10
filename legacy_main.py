@@ -1104,20 +1104,14 @@ class ProposalSender:
         self.max_consecutive_errors = 3
         # 从配置中读取弹窗等待时间，默认 20 秒，用于应对 iframe 加载较慢的情况
         settings = config.load_settings()
-        self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
+        self._apply_settings(settings)
         self.modal_poll_interval = 0.2
-        self.scroll_delay = float(settings.get("scroll_delay", 1.0))
-        self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
-        self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
-        # Partner Groups 相关调试日志开关
-        self.partner_groups_debug_logging = bool(settings.get("partner_groups_debug_logging", False))
         # 缓存每个 Partner Group 文本达到唯一匹配所需的最短输入长度
         self._partner_group_prefix_len_cache: dict[str, int] = {}
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
         # 可以通过检查页面上是否有已发送的标记、按钮状态变化、或DOM结构变化来判断
-        self.dry_run = bool(settings.get("dry_run", False))
         self.config = config
         
         # 初始化日期选择器
@@ -1125,6 +1119,40 @@ class ProposalSender:
         
         # 配置视觉 RPA 处理器（如果启用）
         self._setup_vision_rpa(settings)
+
+        # 订阅配置热更新（如果启用）
+        try:
+            store = getattr(self.config, "store", None)
+            if store is not None:
+                store.subscribe("settings", lambda _k, payload: self.refresh_from_settings(payload))
+        except Exception:
+            pass
+
+    def _apply_settings(self, settings: dict) -> None:
+        """将 settings 应用到实例字段（支持热刷新）。"""
+        self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
+        self.scroll_delay = float(settings.get("scroll_delay", 1.0))
+        self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
+        self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
+        self.partner_groups_debug_logging = bool(settings.get("partner_groups_debug_logging", False))
+        self.dry_run = bool(settings.get("dry_run", False))
+
+    def refresh_from_settings(self, settings: dict) -> None:
+        """配置变更时刷新运行期字段（无需重启进程）。"""
+        try:
+            self._apply_settings(settings or {})
+            self._setup_vision_rpa(settings or {})
+        except Exception:
+            pass
+
+    def _maybe_refresh_settings(self) -> None:
+        """发送前兜底刷新一次，避免 watcher 轮询间隔导致的短暂不一致。"""
+        try:
+            store = getattr(self.config, "store", None)
+            if store is not None:
+                self.refresh_from_settings(store.get_settings())
+        except Exception:
+            pass
     
     def _setup_vision_rpa(self, settings: dict):
         """配置视觉 RPA 处理器"""
@@ -1247,6 +1275,7 @@ class ProposalSender:
             SendProposalsResult(clicked_count, completed_all)。
             completed_all 仅当达到 max_count 时为 True；重连失败等会 raise，不返回。
         """
+        self._maybe_refresh_settings()
         # 等待用户操作完成
         self.console.print(Panel(
             "[bold]请在浏览器中完成以下操作：[/bold]\n"
@@ -1768,6 +1797,7 @@ class ProposalSender:
         Returns:
             SendProposalsResult: 发送结果
         """
+        self._maybe_refresh_settings()
         if template_content is None:
             template_content = self.template_manager.get_active_template()
         

@@ -33,6 +33,11 @@ class TemplateManager:
             with open(self.config.templates_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
             logger.info("模板数据保存成功")
+            try:
+                if getattr(self.config, "store", None) is not None:
+                    self.config.store.force_reload_templates()
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"保存模板数据失败: {e}")

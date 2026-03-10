@@ -3,6 +3,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from core.config_manager import ConfigManager
+from core.config_store import ConfigStore
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender, SendProposalsResult
@@ -16,10 +17,19 @@ class ImpactRPA:
     def __init__(self):
         self.console = Console()
         self.config = ConfigManager()
+        self.config_store = ConfigStore(self.config)
+        self.config.store = self.config_store
+        self.config_store.start_watching(interval_s=0.8)
         self.settings = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
         self.browser = BrowserManager(self.console, self.config)
-        self.proposal_sender = ProposalSender(self.browser, self.template_manager, self.console, self.config)
+        self.proposal_sender = ProposalSender(
+            self.browser,
+            self.template_manager,
+            self.console,
+            self.config,
+            config_store=self.config_store,
+        )
         self.menu = MenuUI(
             self.config,
             self.template_manager,
@@ -29,15 +39,21 @@ class ImpactRPA:
         )
 
     def start(self):
-        if not self.browser.init():
-            self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+        try:
+            if not self.browser.init():
+                self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
+                try:
+                    from notification_service import NotificationService, NotificationPayload
+                    NotificationService().send(NotificationPayload(message="无法连接浏览器"))
+                except Exception:
+                    pass
+                return
+            self._main_loop()
+        finally:
             try:
-                from notification_service import NotificationService, NotificationPayload
-                NotificationService().send(NotificationPayload(message="无法连接浏览器"))
+                self.config_store.stop_watching()
             except Exception:
                 pass
-            return
-        self._main_loop()
 
     def _main_loop(self):
         while True:
