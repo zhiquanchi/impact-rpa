@@ -1136,6 +1136,19 @@ class ProposalSender:
         self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
         self.partner_groups_debug_logging = bool(settings.get("partner_groups_debug_logging", False))
         self.dry_run = bool(settings.get("dry_run", False))
+        default_pg: dict = {"mode": "ui", "api": {}, "id_by_name": {}}
+        user_pg = settings.get("partner_groups")
+        if isinstance(user_pg, dict):
+            merged = {**default_pg, **user_pg}
+            api_u = user_pg.get("api")
+            if isinstance(api_u, dict):
+                merged["api"] = {**(default_pg.get("api") or {}), **api_u}
+            id_u = user_pg.get("id_by_name")
+            if isinstance(id_u, dict):
+                merged["id_by_name"] = {**(default_pg.get("id_by_name") or {}), **id_u}
+            self.partner_groups = merged
+        else:
+            self.partner_groups = dict(default_pg)
 
     def refresh_from_settings(self, settings: dict) -> None:
         """配置变更时刷新运行期字段（无需重启进程）。"""
@@ -1990,7 +2003,7 @@ class ProposalSender:
             self._input_comment(iframe, template_content)
 
             if self.input_partner_groups_tag and selected_tab:
-                self._input_tag_and_select(iframe, selected_tab)
+                self._apply_partner_group(iframe, selected_tab)
 
             self._submit_proposal(iframe)
             return True
@@ -2933,6 +2946,22 @@ class ProposalSender:
 
         return False
 
+    def _apply_partner_group(self, iframe, selected_tab: str) -> None:
+        """根据配置使用 UI 下拉或直连 API 设置 Partner Group。"""
+        pg = getattr(self, "partner_groups", None) or {}
+        mode = (pg.get("mode") or "ui").strip().lower()
+        if mode == "api":
+            from domain.partner_groups_api import set_partner_group_via_api
+
+            set_partner_group_via_api(
+                iframe,
+                selected_tab,
+                pg,
+                debug=bool(getattr(self, "partner_groups_debug_logging", False)),
+            )
+            return
+        self._input_tag_and_select(iframe, selected_tab)
+
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
         """在 tag-input 中逐字符输入，完整输入后出现唯一匹配时立即选中。"""
         try:
@@ -3682,19 +3711,31 @@ class MenuUI:
             self._set_template_term_from_browser(settings, current)
 
     def set_partner_groups_tag_input(self):
-        """设置是否在弹窗中输入 Partner Groups 标签。"""
+        """设置 Partner Groups：网页下拉、直连 API，或跳过。"""
         settings = self.config.load_settings()
-        current = bool(settings.get('input_partner_groups_tag', True))
+        current_input = bool(settings.get("input_partner_groups_tag", True))
+        pg = settings.get("partner_groups")
+        if not isinstance(pg, dict):
+            pg = {}
+        current_mode = (pg.get("mode") or "ui").strip().lower()
+
+        if not current_input:
+            mode_desc = "跳过"
+        elif current_mode == "api":
+            mode_desc = "接口（API）"
+        else:
+            mode_desc = "网页输入与下拉选择"
 
         self.console.print(
-            f"[cyan]当前设置：输入 Partner Groups 标签 = [bold]{'是' if current else '否'}[/bold][/cyan]"
+            f"[cyan]当前：Partner Groups = [bold]{mode_desc}[/bold][/cyan]"
         )
 
         selected = questionary.select(
-            "请选择是否输入 Partner Groups 标签:",
+            "请选择 Partner Groups 设置方式:",
             choices=[
-                questionary.Choice("✅ 是（输入）", value=True),
-                questionary.Choice("🚫 否（跳过）", value=False),
+                questionary.Choice("✅ 网页输入并下拉选择", value="ui"),
+                questionary.Choice("🌐 直连接口（在 settings.json 的 partner_groups.api 填写 Reqable 抓到的 URL/Body）", value="api"),
+                questionary.Choice("🚫 跳过", value="skip"),
                 questionary.Choice("🔙 取消", value=None),
             ],
             style=questionary.Style([
@@ -3707,13 +3748,46 @@ class MenuUI:
             self.console.print("[yellow]已取消[/yellow]")
             return
 
-        settings['input_partner_groups_tag'] = bool(selected)
+        base_pg = {
+            "mode": "ui",
+            "api": {
+                "url": "",
+                "method": "POST",
+                "headers": {},
+                "body": None,
+                "csrf_meta_selector": "",
+                "csrf_header_name": "X-CSRF-Token",
+                "success_status_min": 200,
+                "success_status_max": 299,
+            },
+            "id_by_name": {},
+        }
+        merged_pg = {**base_pg, **pg} if isinstance(pg, dict) else dict(base_pg)
+        if isinstance(pg.get("api"), dict):
+            merged_pg["api"] = {**base_pg["api"], **pg["api"]}
+
+        if selected == "skip":
+            settings["input_partner_groups_tag"] = False
+        elif selected == "api":
+            settings["input_partner_groups_tag"] = True
+            merged_pg["mode"] = "api"
+        else:
+            settings["input_partner_groups_tag"] = True
+            merged_pg["mode"] = "ui"
+
+        settings["partner_groups"] = merged_pg
         if self.config.save_settings(settings):
             if self.proposal_sender:
-                self.proposal_sender.input_partner_groups_tag = bool(selected)
-            self.console.print(
-                f"[bold green]✓ 已设置：输入 Partner Groups 标签 = {'是' if selected else '否'}[/bold green]"
-            )
+                self.proposal_sender.refresh_from_settings(self.config.load_settings())
+            if selected == "skip":
+                self.console.print("[bold green]✓ 已设置：跳过 Partner Groups[/bold green]")
+            elif selected == "api":
+                self.console.print(
+                    "[bold green]✓ 已切换为 API 模式[/bold green]；请确认 "
+                    "[cyan]config/settings.json[/cyan] 中 [bold]partner_groups.api.url[/bold] 等已按 Reqable 抓包填写。"
+                )
+            else:
+                self.console.print("[bold green]✓ 已切换为网页下拉选择模式[/bold green]")
     
     def _set_template_term_from_browser(self, settings: dict, current: str):
         """从浏览器弹窗获取 Template Term 选项并让用户选择"""
