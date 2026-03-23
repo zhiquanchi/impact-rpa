@@ -23,7 +23,7 @@ class ProposalModalService:
 
             should_input_partner_groups = bool(getattr(self.sender, "input_partner_groups_tag", True))
             if should_input_partner_groups and selected_tab:
-                self.sender._input_tag_and_select(iframe, selected_tab)
+                self.sender._apply_partner_group(iframe, selected_tab)
 
             self.sender._submit_proposal(iframe)
             return True

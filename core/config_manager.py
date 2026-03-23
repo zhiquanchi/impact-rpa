@@ -26,6 +26,20 @@ class ConfigManager:
             "input_partner_groups_tag": True,
             # 是否输出 Partner Groups 下拉解析与点击的详细调试日志
             "partner_groups_debug_logging": False,
+            "partner_groups": {
+                "mode": "ui",
+                "api": {
+                    "url": "",
+                    "method": "POST",
+                    "headers": {},
+                    "body": None,
+                    "csrf_meta_selector": "",
+                    "csrf_header_name": "X-CSRF-Token",
+                    "success_status_min": 200,
+                    "success_status_max": 299,
+                },
+                "id_by_name": {},
+            },
             "screenshot_on_error": True,
             "screenshot_full_page": False,
             "vision_rpa": {

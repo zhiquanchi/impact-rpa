@@ -9,6 +9,28 @@
     "screenshot_on_error": true,
     "screenshot_full_page": false,
     "partner_groups_debug_logging": false,
+    "partner_groups": {
+        "mode": "api",
+        "api": {
+            "url": "https://app.impact.com/partner-ui/api/relationship/groups",
+            "method": "PUT",
+            "headers": {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*"
+            },
+            "body": {
+                "psi": "{{creator_psi}}",
+                "groups": [
+                    "{{selected_tab}}"
+                ]
+            },
+            "csrf_meta_selector": "",
+            "csrf_header_name": "X-CSRF-Token",
+            "success_status_min": 200,
+            "success_status_max": 299
+        },
+        "id_by_name": {}
+    },
     "vision_rpa": {
         "enabled": false,
         "api_key": "",
