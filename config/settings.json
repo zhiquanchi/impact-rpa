@@ -10,7 +10,7 @@
     "screenshot_full_page": false,
     "partner_groups_debug_logging": false,
     "partner_groups": {
-        "mode": "ui",
+        "mode": "api",
         "api": {
             "url": "https://app.impact.com/partner-ui/api/relationship/groups",
             "method": "PUT",

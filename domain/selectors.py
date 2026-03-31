@@ -7,15 +7,11 @@ DATE_INPUT_SELECTORS = [
 ]
 
 PREV_MONTH_SELECTORS = [
-    'css:button[data-testid="uicl-calendar-previous-month"]',
-    'css:button[aria-label="Previous Month"]',
-    'css:button[aria-label^="Previous"]',
+    'css:button[aria-label="Previous"]',
 ]
 
 NEXT_MONTH_SELECTORS = [
-    'css:button[data-testid="uicl-calendar-next-month"]',
-    'css:button[aria-label="Next Month"]',
-    'css:button[aria-label^="Next"]',
+    'css:button[aria-label="Next"]',
 ]
 
 DATE_CELL_SELECTORS = [

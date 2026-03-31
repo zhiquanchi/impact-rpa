@@ -5,7 +5,7 @@ import os
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from loguru import logger
 import questionary
 from rich.console import Console
@@ -659,15 +659,11 @@ class DatePicker:
     
     # 月份切换按钮选择器
     PREV_MONTH_SELECTORS = [
-        'css:button[data-testid="uicl-calendar-previous-month"]',
-        'css:button[aria-label="Previous Month"]',
-        'css:button[aria-label^="Previous"]',
+        'css:button[aria-label="Previous"]',
     ]
     
     NEXT_MONTH_SELECTORS = [
-        'css:button[data-testid="uicl-calendar-next-month"]',
-        'css:button[aria-label="Next Month"]',
-        'css:button[aria-label^="Next"]',
+        'css:button[aria-label="Next"]',
     ]
     
     # 日期单元格选择器
@@ -758,16 +754,14 @@ class DatePicker:
             if not self._open_date_picker(context):
                 return False
 
-        # 计算月份差异（必须在快速路径之前，用于判断是否需要跨月导航）
-        now = datetime.now()
-        months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
-
-        # Impact 专用快速路径：仅当目标日期在当前显示月份时才使用，
-        # 避免跨月时误点当前月份中同一天数的日期（如 3/31 → 4/1 误点 3/1）
-        if months_diff == 0 and self._is_impact_modal_iframe(context):
+        # Impact 专用快速路径：当前视图直接按日期文本点击，尽量避免复杂遍历
+        if self._is_impact_modal_iframe(context):
             if self._try_pick_date_in_view_fast_impact(context, target_day, target_iso):
                 return True
 
+        # 计算月份差异
+        now = datetime.now()
+        months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
         direction = 'next' if months_diff >= 0 else 'prev'
 
         # 尝试在当前视图或切换月份后找到目标日期
@@ -784,10 +778,7 @@ class DatePicker:
                             if self._try_pick_date_in_view(context, target_day, target_iso):
                                 return True
                     break
-            # 尚未导航到目标月份时，仅做属性匹配（完整 ISO），
-            # 防止文本兜底误点当前月份中同一天数的日期（如想点 4/1 却点了 3/1）
-            need_attr_only = (months_diff != 0 and step == 0)
-            if self._try_pick_date_in_view(context, target_day, target_iso, attr_only=need_attr_only):
+            if self._try_pick_date_in_view(context, target_day, target_iso):
                 return True
 
         logger.warning(f"元素点击方式未找到目标日期: {target_iso}")
@@ -987,13 +978,8 @@ class DatePicker:
         
         return False
     
-    def _try_pick_date_in_view(self, context, target_day: str, target_iso: str, *, attr_only: bool = False) -> bool:
-        """尝试在当前视图中选择目标日期
-
-        Args:
-            attr_only: 仅使用属性匹配（完整 ISO 日期），跳过纯文本兜底。
-                       用于尚未导航到目标月份时，防止误点当前月份中同一天数的日期。
-        """
+    def _try_pick_date_in_view(self, context, target_day: str, target_iso: str) -> bool:
+        """尝试在当前视图中选择目标日期"""
         date_cells = []
         # 尝试所有选择器
         for selector in self.DATE_CELL_SELECTORS:
@@ -1033,9 +1019,6 @@ class DatePicker:
             except Exception:
                 continue
         
-        if attr_only:
-            return False
-
         # 兜底：按日历格子的文本点击
         for cell in date_cells or []:
             try:
@@ -1125,8 +1108,6 @@ class ProposalSender:
         self.modal_poll_interval = 0.2
         # 缓存每个 Partner Group 文本达到唯一匹配所需的最短输入长度
         self._partner_group_prefix_len_cache: dict[str, int] = {}
-        # 缓存当前日期，保证同一批次内所有 proposal 使用一致的 T+1
-        self._cached_today: date | None = None
         self.counted_attr = 'data-impact-rpa-counted'
         self.clicked_attr = 'data-impact-rpa-clicked'
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
@@ -1321,10 +1302,6 @@ class ProposalSender:
         questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
         
         logger.info(f"开始发送 Send Proposal，目标数量: {max_count}")
-
-        # 缓存当前日期，保证同一批次内 T+1 一致
-        self._cached_today = date.today()
-        logger.info(f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}")
 
         if template_content is None:
             template_content = self.template_manager.get_active_template()
@@ -1850,11 +1827,7 @@ class ProposalSender:
         max_consecutive_errors = 3
         
         self.console.print(f"\n[bold cyan]开始 Creator Search 批量发送 (目标: {max_count} 个，起始行: {start_row})...[/bold cyan]")
-
-        # 缓存当前日期，保证同一批次内 T+1 一致
-        self._cached_today = date.today()
-        logger.info(f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}")
-
+        
         while sent_count < max_count:
             if consecutive_errors >= max_consecutive_errors:
                 self.console.print(f"[red]连续 {max_consecutive_errors} 次错误，停止发送[/red]")
@@ -3141,13 +3114,6 @@ class ProposalSender:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
     
-    def _get_today(self) -> date:
-        """获取当前日期（带缓存），保证同一批次内所有 proposal 使用一致的 T+1"""
-        if self._cached_today is None:
-            self._cached_today = date.today()
-            logger.info(f"当前日期已缓存: {self._cached_today.isoformat()}")
-        return self._cached_today
-
     def _select_tomorrow_date(self, iframe, strategies: list | None = None) -> bool:
         """
         选择明天的日期
@@ -3160,9 +3126,7 @@ class ProposalSender:
             bool: 是否成功
         """
         try:
-            today = self._get_today()
-            tomorrow = today + timedelta(days=1)
-            target_date = datetime.combine(tomorrow, datetime.min.time())
+            target_date = datetime.now() + timedelta(days=1)
             if strategies is None:
                 # 主流程只使用真实点击（element_click）。
                 # 当今天是月末时，明天会自动变成下个月 1 号，由 element_click 负责跨月导航并点击。
