@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 import pyperclip
+from difflib import SequenceMatcher
 from exception_handler import exception_handler
 import inspect
 
@@ -2150,13 +2151,11 @@ class ProposalSender:
                     except Exception:
                         pass
             
-            # 去重并保持顺序（使用与 _select_template_term 相同的规范化逻辑）
+            # 去重并保持顺序：仅按显示文本去重，保留 "(1)/(2)" 这类明确区分值
             seen = set()
             unique_options = []
             for opt in options_list:
-                # 规范化：去除末尾 (数字)、小写、压缩空格
-                norm = re.sub(r'\s*\(\d+\)\s*$', '', opt).strip().lower()
-                norm = re.sub(r'\s+', ' ', norm)
+                norm = re.sub(r'\s+', ' ', opt).strip().lower()
                 if norm not in seen:
                     seen.add(norm)
                     unique_options.append(opt)
@@ -2167,32 +2166,11 @@ class ProposalSender:
             logger.error(f"获取 Template Term 选项失败: {e}")
             return []
 
-    @staticmethod
-    def _levenshtein_ratio(a: str, b: str) -> float:
-        """基于 Levenshtein 编辑距离的相似度，范围 0~1（完全相同为 1）。"""
-        if a == b:
-            return 1.0
-        if not a or not b:
-            return 0.0
-        la, lb = len(a), len(b)
-        prev = list(range(lb + 1))
-        for i, ca in enumerate(a, 1):
-            cur = [i]
-            for j, cb in enumerate(b, 1):
-                ins = cur[j - 1] + 1
-                delete = prev[j] + 1
-                replace = prev[j - 1] + (0 if ca == cb else 1)
-                cur.append(min(ins, delete, replace))
-            prev = cur
-        dist = prev[lb]
-        return 1.0 - dist / max(la, lb)
-
     def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
         """选择 Template Term"""
         try:
             desired = (term_text or "Commission Tier Terms").strip()
-            desired_norm = re.sub(r'\s*\(\d+\)\s*$', '', desired).strip().lower()
-            desired_norm = re.sub(r'\s+', ' ', desired_norm)
+            desired_norm = re.sub(r'\s+', ' ', desired).strip().lower()
             term_sim_threshold = 0.72
             term_sim_tie_eps = 0.005
 
@@ -2325,18 +2303,16 @@ class ProposalSender:
 
                 for it in items or []:
                     txt = it.text or ''
-                    txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
-                    txtn = re.sub(r'\s+', ' ', txtn)
+                    txtn = re.sub(r'\s+', ' ', txt).strip().lower()
                     options.append((txt, txtn, it))
                 if not options:
                     nodes = dropdown.eles('css:div.text-ellipsis')
                     for it in nodes or []:
                         txt = it.text or ''
-                        txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
-                        txtn = re.sub(r'\s+', ' ', txtn)
+                        txtn = re.sub(r'\s+', ' ', txt).strip().lower()
                         options.append((txt, txtn, it))
 
-                # 去重：避免 DOM 中存在重复元素导致同一选项被多次添加（如隐藏副本、Portal 元素等）
+                # 去重：避免 DOM 中相同显示文本的重复节点，但保留 "(1)/(2)" 这类明确值
                 seen_norm = set()
                 unique_options = []
                 for txt, txtn, ele in options:
@@ -2384,51 +2360,22 @@ class ProposalSender:
                     _, element, persist_label = candidates[picked_index]
                     return _click_term_row(element, persist_label, persist_choice=True)
 
-                desired_strip_lower = (desired or "").strip().lower()
-                # 与配置中的完整显示文案一致（优先于末位 (数字) 归一化，避免 CPAi (1)/(2) 保存后仍反复歧义）
-                display_exact = [
-                    (t, n, e)
-                    for (t, n, e) in options
-                    if (t or "").strip().lower() == desired_strip_lower
-                ]
-                if len(display_exact) == 1:
-                    return _click_term_row(display_exact[0][2], display_exact[0][0])
-
-                # 规范化文本完全一致
-                exact = [(t, n, e) for (t, n, e) in options if n == desired_norm]
-                if len(exact) == 1:
-                    return _click_term_row(exact[0][2], exact[0][0])
-                if len(exact) > 1:
-                    exact_candidates = [(t, e, t) for (t, _, e) in exact]
-                    if _prompt_and_pick(exact_candidates, "\n[bold]检测到多个匹配项，请选择：[/bold]"):
-                        return True
-
-                # 子串匹配：如果配置文本是选项的子串（忽略大小写）
-                substring = [(t, n, e) for (t, n, e) in options if desired_norm in n]
-                if len(substring) == 1:
-                    return _click_term_row(substring[0][2], substring[0][0])
-                if len(substring) > 1:
-                    # 多个包含子串的选项，让用户选择
-                    substring_candidates = [(t, e, t) for (t, _, e) in substring]
-                    if _prompt_and_pick(substring_candidates, "\n[bold]检测到多个包含配置文本的选项，请选择：[/bold]"):
-                        return True
-
-                # Levenshtein 相似度选最优（阈值以下视为未匹配，列出全部）
                 scored = [
-                    (self._levenshtein_ratio(desired_norm, n), t, n, e) for (t, n, e) in options
+                    (SequenceMatcher(None, desired_norm, n).ratio(), t, e) for (t, n, e) in options
                 ]
                 scored.sort(key=lambda x: -x[0])
                 best_score = scored[0][0] if scored else 0.0
                 if best_score >= term_sim_threshold:
                     top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
                     if len(top) == 1:
-                        return _click_term_row(top[0][3], top[0][1])
+                        return _click_term_row(top[0][2], top[0][1])
                     top_candidates = [
                         (f"{t}  [dim](相似度 {best_score:.2f})[/dim]", e, t)
-                        for (_, t, _, e) in top
+                        for (_, t, e) in top
                     ]
-                    if _prompt_and_pick(top_candidates, "\n[bold]多个相似候选项（编辑距离并列），请选择：[/bold]"):
+                    if _prompt_and_pick(top_candidates, "\n[bold]多个相似候选项，请选择：[/bold]"):
                         return True
+                    return False
 
                 if options:
                     self.console.print(
@@ -2438,44 +2385,7 @@ class ProposalSender:
                     all_candidates = [(t, e, t) for (t, _, e) in options]
                     if _prompt_and_pick(all_candidates, ""):
                         return True
-
-            try:
-                desired_ele = iframe.ele(f'text={desired}', timeout=2)
-                if desired_ele:
-                    try:
-                        desired_ele.wait.clickable()
-                    except Exception:
-                        pass
-                    desired_ele.click(by_js=None)
-                    logger.info(f"已选择 Template Term: {desired}")
-                    time.sleep(0.3)
-                    return True
-            except:
-                pass
-
-            term_options = iframe.eles('css:div.text-ellipsis')
-            ellipsis_scored = []
-            for opt in term_options:
-                try:
-                    if opt and opt.text:
-                        txt = re.sub(r'\s*\(\d+\)\s*$', '', opt.text).strip().lower()
-                        txt = re.sub(r'\s+', ' ', txt)
-                        sim = self._levenshtein_ratio(desired_norm, txt)
-                        ellipsis_scored.append((sim, opt, txt))
-                except Exception:
-                    continue
-            if ellipsis_scored:
-                ellipsis_scored.sort(key=lambda x: -x[0])
-                best_s, best_opt, best_txt = ellipsis_scored[0]
-                if best_txt == desired_norm or best_s >= term_sim_threshold:
-                    try:
-                        best_opt.wait.clickable()
-                    except Exception:
-                        pass
-                    best_opt.click(by_js=None)
-                    logger.info(f"已选择 Template Term: {desired}")
-                    time.sleep(0.3)
-                    return True
+                    return False
             
             self.console.print("\n[bold]未找到可选项[/bold]")
             return False

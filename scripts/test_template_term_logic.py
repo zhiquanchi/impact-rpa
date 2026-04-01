@@ -1,97 +1,81 @@
 #!/usr/bin/env python
 """
-测试 Template Term 选择逻辑，特别是子串匹配修复
+测试 Template Term 选择逻辑，当前仅保留 SequenceMatcher 相似度匹配。
 """
 
-import sys
 import os
+import sys
+from difflib import SequenceMatcher
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def test_normalization():
-    """测试规范化逻辑"""
-    import re
+def normalize_display(text: str) -> str:
+    """与 legacy_main.py 保持一致：保留显示值差异，仅压缩空格并转小写。"""
+    return " ".join((text or "").strip().lower().split())
 
-    def normalize(text: str) -> str:
-        """与 legacy_main.py 相同的规范化逻辑"""
-        norm = re.sub(r'\s*\(\d+\)\s*$', '', text).strip().lower()
-        norm = re.sub(r'\s+', ' ', norm)
-        return norm
 
-    test_cases = [
-        ("CPAi", "cpai"),
-        ("CPAi (1)", "cpai"),
-        ("CPAi(Deal/Coupon)", "cpai(deal/coupon)"),
-        ("Commission Tier Terms", "commission tier terms"),
-        ("  CPAi  (2)  ", "cpai"),
+def score_options(desired: str, options: list[str]) -> list[tuple[float, str]]:
+    """按 SequenceMatcher 相似度降序返回候选项。"""
+    desired_norm = normalize_display(desired)
+    scored = [
+        (SequenceMatcher(None, desired_norm, normalize_display(option)).ratio(), option)
+        for option in options
     ]
+    return sorted(scored, key=lambda item: item[0], reverse=True)
 
-    for input_text, expected in test_cases:
-        result = normalize(input_text)
-        if result == expected:
-            print(f"[OK] 规范化 '{input_text}' -> '{result}'")
-        else:
-            print(f"[FAIL] 规范化 '{input_text}' -> '{result}' (期望: '{expected}')")
-            return False
-    return True
 
-def test_substring_matching():
-    """测试子串匹配逻辑"""
-    # 模拟选项列表，格式: (显示文本, 规范化文本, 元素占位符)
-    options = [
-        ("CPAi", "cpai", None),
-        ("CPAi(Deal/Coupon)", "cpai(deal/coupon)", None),
-        ("Commission Tier Terms", "commission tier terms", None),
-        ("CPA", "cpa", None),
-    ]
+def test_explicit_value_wins():
+    """测试用户明确值后，带编号的目标项应拿到最高分。"""
+    desired = "CPAi (2)"
+    options = ["CPAi (1)", "CPAi (2)", "CPAi"]
+    scored = score_options(desired, options)
 
-    # 测试配置为 "CPAi"
-    desired = "CPAi"
-    desired_norm = "cpai"
+    print(f"\n测试明确值优先: '{desired}'")
+    print(f"相似度排序: {scored}")
 
-    # 子串匹配逻辑（从 legacy_main.py 复制）
-    substring = [(t, n, e) for (t, n, e) in options if desired_norm in n]
-
-    print(f"\n测试配置: '{desired}' (规范化: '{desired_norm}')")
-    print(f"选项列表: {[t for t, _, _ in options]}")
-    print(f"子串匹配结果: {[t for t, _, _ in substring]}")
-
-    # 期望: 匹配 "CPAi" 和 "CPAi(Deal/Coupon)"
-    expected_matches = ["CPAi", "CPAi(Deal/Coupon)"]
-    actual_matches = [t for t, _, _ in substring]
-
-    if set(actual_matches) == set(expected_matches):
-        print(f"[OK] 子串匹配正确: 找到 {len(actual_matches)} 个匹配项")
+    if scored[0][1] == "CPAi (2)" and scored[0][0] == 1.0:
+        print("[OK] 明确值命中正确")
         return True
-    else:
-        print(f"[FAIL] 子串匹配错误")
-        print(f"  期望: {expected_matches}")
-        print(f"  实际: {actual_matches}")
-        return False
 
-def test_priority():
-    """测试匹配优先级：完全匹配优先于子串匹配"""
-    options = [
-        ("CPAi", "cpai", None),
-        ("CPAi(Deal/Coupon)", "cpai(deal/coupon)", None),
-    ]
+    print("[FAIL] 明确值没有排在第一位")
+    return False
 
-    desired = "CPAi"
-    desired_strip_lower = desired.strip().lower()  # "cpai"
-    desired_norm = "cpai"
 
-    # 第1层：完全匹配显示文案
-    display_exact = [(t, n, e) for (t, n, e) in options if (t or "").strip().lower() == desired_strip_lower]
+def test_similarity_tie():
+    """测试相似度并列时需要用户确认。"""
+    desired = "abc"
+    options = ["abcd", "abce"]
+    scored = score_options(desired, options)
+    best_score = scored[0][0]
+    top = [item for item in scored if item[0] >= best_score - 0.005]
 
-    print(f"\n测试优先级: 配置 '{desired}'")
-    print(f"完全匹配结果: {[t for t, _, _ in display_exact]}")
+    print(f"\n测试并列候选: '{desired}'")
+    print(f"相似度排序: {scored}")
 
-    # 期望: 完全匹配到 "CPAi"，而不是 "CPAi(Deal/Coupon)"
-    if len(display_exact) == 1 and display_exact[0][0] == "CPAi":
-        print("[OK] 完全匹配优先正确: 匹配到 'CPAi'")
+    if len(top) == 2:
+        print("[OK] 正确识别到并列候选，需要用户确认")
         return True
-    else:
-        print("[FAIL] 完全匹配优先错误")
-        return False
+
+    print("[FAIL] 未识别出并列候选")
+    return False
+
+
+def test_below_threshold():
+    """测试低于阈值时不自动命中。"""
+    desired = "xyz"
+    options = ["Commission Tier Terms", "Public Terms"]
+    scored = score_options(desired, options)
+    best_score = scored[0][0]
+
+    print(f"\n测试低于阈值: '{desired}'")
+    print(f"相似度排序: {scored}")
+
+    if best_score < 0.72:
+        print("[OK] 最高分低于自动选择阈值")
+        return True
+
+    print("[FAIL] 不相关候选的相似度异常偏高")
+    return False
 
 def main():
     """运行所有测试"""
@@ -101,25 +85,22 @@ def main():
 
     all_passed = True
 
-    # 测试1: 规范化逻辑
-    print("\n[测试1] 规范化逻辑")
-    if not test_normalization():
+    print("\n[测试1] 明确值优先")
+    if not test_explicit_value_wins():
         all_passed = False
 
-    # 测试2: 子串匹配
-    print("\n[测试2] 子串匹配逻辑")
-    if not test_substring_matching():
+    print("\n[测试2] 相似度并列")
+    if not test_similarity_tie():
         all_passed = False
 
-    # 测试3: 匹配优先级
-    print("\n[测试3] 匹配优先级")
-    if not test_priority():
+    print("\n[测试3] 阈值保护")
+    if not test_below_threshold():
         all_passed = False
 
     print("\n" + "=" * 60)
     if all_passed:
         print("[OK] 所有测试通过")
-        print("\n修复验证成功: 子串匹配逻辑正确处理 CPAi 与 CPAi(Deal/Coupon)")
+        print("\n修复验证成功: Template Term 仅使用 SequenceMatcher 相似度匹配")
     else:
         print("[FAIL] 部分测试失败")
         sys.exit(1)
