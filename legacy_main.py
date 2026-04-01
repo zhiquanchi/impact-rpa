@@ -2150,14 +2150,17 @@ class ProposalSender:
                     except Exception:
                         pass
             
-            # 去重并保持顺序
+            # 去重并保持顺序（使用与 _select_template_term 相同的规范化逻辑）
             seen = set()
             unique_options = []
             for opt in options_list:
-                if opt.lower() not in seen:
-                    seen.add(opt.lower())
+                # 规范化：去除末尾 (数字)、小写、压缩空格
+                norm = re.sub(r'\s*\(\d+\)\s*$', '', opt).strip().lower()
+                norm = re.sub(r'\s+', ' ', norm)
+                if norm not in seen:
+                    seen.add(norm)
                     unique_options.append(opt)
-            
+
             return unique_options
             
         except Exception as e:
@@ -2319,7 +2322,7 @@ class ProposalSender:
                     items = listbox.eles('css:li')
                 else:
                     items = dropdown.eles('xpath:.//li[@role="option"]')
-                
+
                 for it in items or []:
                     txt = it.text or ''
                     txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
@@ -2332,6 +2335,15 @@ class ProposalSender:
                         txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
                         txtn = re.sub(r'\s+', ' ', txtn)
                         options.append((txt, txtn, it))
+
+                # 去重：避免 DOM 中存在重复元素导致同一选项被多次添加（如隐藏副本、Portal 元素等）
+                seen_norm = set()
+                unique_options = []
+                for txt, txtn, ele in options:
+                    if txtn not in seen_norm:
+                        seen_norm.add(txtn)
+                        unique_options.append((txt, txtn, ele))
+                options = unique_options
 
                 def _click_term_row(elem, picked_label: str, persist_choice: bool = False) -> bool:
                     try:
@@ -2389,6 +2401,16 @@ class ProposalSender:
                 if len(exact) > 1:
                     exact_candidates = [(t, e, t) for (t, _, e) in exact]
                     if _prompt_and_pick(exact_candidates, "\n[bold]检测到多个匹配项，请选择：[/bold]"):
+                        return True
+
+                # 子串匹配：如果配置文本是选项的子串（忽略大小写）
+                substring = [(t, n, e) for (t, n, e) in options if desired_norm in n]
+                if len(substring) == 1:
+                    return _click_term_row(substring[0][2], substring[0][0])
+                if len(substring) > 1:
+                    # 多个包含子串的选项，让用户选择
+                    substring_candidates = [(t, e, t) for (t, _, e) in substring]
+                    if _prompt_and_pick(substring_candidates, "\n[bold]检测到多个包含配置文本的选项，请选择：[/bold]"):
                         return True
 
                 # Levenshtein 相似度选最优（阈值以下视为未匹配，列出全部）
