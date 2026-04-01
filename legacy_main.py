@@ -2136,13 +2136,35 @@ class ProposalSender:
         except Exception as e:
             logger.error(f"获取 Template Term 选项失败: {e}")
             return []
-    
+
+    @staticmethod
+    def _levenshtein_ratio(a: str, b: str) -> float:
+        """基于 Levenshtein 编辑距离的相似度，范围 0~1（完全相同为 1）。"""
+        if a == b:
+            return 1.0
+        if not a or not b:
+            return 0.0
+        la, lb = len(a), len(b)
+        prev = list(range(lb + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            for j, cb in enumerate(b, 1):
+                ins = cur[j - 1] + 1
+                delete = prev[j] + 1
+                replace = prev[j - 1] + (0 if ca == cb else 1)
+                cur.append(min(ins, delete, replace))
+            prev = cur
+        dist = prev[lb]
+        return 1.0 - dist / max(la, lb)
+
     def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
         """选择 Template Term"""
         try:
             desired = (term_text or "Commission Tier Terms").strip()
             desired_norm = re.sub(r'\s*\(\d+\)\s*$', '', desired).strip().lower()
             desired_norm = re.sub(r'\s+', ' ', desired_norm)
+            term_sim_threshold = 0.72
+            term_sim_tie_eps = 0.005
 
             term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
             
@@ -2283,27 +2305,31 @@ class ProposalSender:
                         txtn = re.sub(r'\s*\(\d+\)\s*$', '', txt).strip().lower()
                         txtn = re.sub(r'\s+', ' ', txtn)
                         options.append((txt, txtn, it))
-                matches = [(t, n, e) for (t, n, e) in options if n == desired_norm or desired_norm in n or n in desired_norm]
-                if len(matches) == 1:
+
+                def _click_term_row(elem, picked_label: str) -> bool:
                     try:
-                        matches[0][2].wait.clickable()
+                        elem.wait.clickable()
                     except Exception:
                         pass
-                    # 优先使用原生点击（如果元素有尺寸）
                     try:
-                        matches[0][2].click()
+                        elem.click()
                     except Exception:
-                        matches[0][2].click(by_js=True)
-                    logger.info(f"已选择 Template Term: {matches[0][0]}")
+                        elem.click(by_js=True)
+                    logger.info(f"已选择 Template Term: {picked_label}")
                     time.sleep(0.3)
                     return True
-                if len(matches) > 1:
+
+                # 规范化文本完全一致
+                exact = [(t, n, e) for (t, n, e) in options if n == desired_norm]
+                if len(exact) == 1:
+                    return _click_term_row(exact[0][2], exact[0][0])
+                if len(exact) > 1:
                     self.console.print("\n[bold]检测到多个匹配项，请选择：[/bold]")
-                    for idx, (t, _, _) in enumerate(matches, start=1):
+                    for idx, (t, _, _) in enumerate(exact, start=1):
                         self.console.print(f"{idx}. {t}")
-                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(matches) or "请输入有效编号").ask()
+                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(exact) or "请输入有效编号").ask()
                     if sel and sel.isdigit():
-                        pick = matches[int(sel)-1]
+                        pick = exact[int(sel) - 1]
                         try:
                             pick[2].wait.clickable()
                         except Exception:
@@ -2319,8 +2345,44 @@ class ProposalSender:
                         logger.info(f"已选择 Template Term: {pick[0]}")
                         time.sleep(0.3)
                         return True
-                if not matches and options:
-                    self.console.print("\n[bold]未匹配到配置项，以下为所有可选项：[/bold]")
+
+                # Levenshtein 相似度选最优（阈值以下视为未匹配，列出全部）
+                scored = [
+                    (self._levenshtein_ratio(desired_norm, n), t, n, e) for (t, n, e) in options
+                ]
+                scored.sort(key=lambda x: -x[0])
+                best_score = scored[0][0] if scored else 0.0
+                if best_score >= term_sim_threshold:
+                    top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
+                    if len(top) == 1:
+                        return _click_term_row(top[0][3], top[0][1])
+                    self.console.print("\n[bold]多个相似候选项（编辑距离并列），请选择：[/bold]")
+                    for idx, (_, t, _, _) in enumerate(top, start=1):
+                        self.console.print(f"{idx}. {t}  [dim](相似度 {best_score:.2f})[/dim]")
+                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(top) or "请输入有效编号").ask()
+                    if sel and sel.isdigit():
+                        row = top[int(sel) - 1]
+                        try:
+                            row[3].wait.clickable()
+                        except Exception:
+                            pass
+                        try:
+                            row[3].click()
+                        except Exception:
+                            row[3].click(by_js=True)
+                        settings = self.config.load_settings()
+                        settings['template_term'] = row[1]
+                        self.config.save_settings(settings)
+                        self.template_term = row[1]
+                        logger.info(f"已选择 Template Term: {row[1]}")
+                        time.sleep(0.3)
+                        return True
+
+                if options:
+                    self.console.print(
+                        f"\n[bold]未匹配到配置项（最高相似度 {best_score:.2f}，需 ≥{term_sim_threshold:.2f}），"
+                        "以下为所有可选项：[/bold]"
+                    )
                     for idx, (t, _, _) in enumerate(options, start=1):
                         self.console.print(f"{idx}. {t}")
                     sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(options) or "请输入有效编号").ask()
@@ -2357,22 +2419,28 @@ class ProposalSender:
                 pass
 
             term_options = iframe.eles('css:div.text-ellipsis')
+            ellipsis_scored = []
             for opt in term_options:
                 try:
                     if opt and opt.text:
                         txt = re.sub(r'\s*\(\d+\)\s*$', '', opt.text).strip().lower()
                         txt = re.sub(r'\s+', ' ', txt)
-                        if txt == desired_norm or desired_norm in txt:
-                            try:
-                                opt.wait.clickable()
-                            except Exception:
-                                pass
-                            opt.click(by_js=None)
-                            logger.info(f"已选择 Template Term: {desired}")
-                            time.sleep(0.3)
-                            return True
-                except:
+                        sim = self._levenshtein_ratio(desired_norm, txt)
+                        ellipsis_scored.append((sim, opt, txt))
+                except Exception:
                     continue
+            if ellipsis_scored:
+                ellipsis_scored.sort(key=lambda x: -x[0])
+                best_s, best_opt, best_txt = ellipsis_scored[0]
+                if best_txt == desired_norm or best_s >= term_sim_threshold:
+                    try:
+                        best_opt.wait.clickable()
+                    except Exception:
+                        pass
+                    best_opt.click(by_js=None)
+                    logger.info(f"已选择 Template Term: {desired}")
+                    time.sleep(0.3)
+                    return True
             
             self.console.print("\n[bold]未找到可选项[/bold]")
             return False
