@@ -2333,7 +2333,7 @@ class ProposalSender:
                         txtn = re.sub(r'\s+', ' ', txtn)
                         options.append((txt, txtn, it))
 
-                def _click_term_row(elem, picked_label: str) -> bool:
+                def _click_term_row(elem, picked_label: str, persist_choice: bool = False) -> bool:
                     try:
                         elem.wait.clickable()
                     except Exception:
@@ -2342,35 +2342,53 @@ class ProposalSender:
                         elem.click()
                     except Exception:
                         elem.click(by_js=True)
+                    if persist_choice:
+                        settings = self.config.load_settings()
+                        settings['template_term'] = picked_label
+                        self.config.save_settings(settings)
+                        self.template_term = picked_label
                     logger.info(f"已选择 Template Term: {picked_label}")
                     time.sleep(0.3)
                     return True
+
+                def _ask_choice(total: int):
+                    sel = questionary.text(
+                        "请输入编号:",
+                        validate=lambda x: x.isdigit() and 1 <= int(x) <= total or "请输入有效编号",
+                    ).ask()
+                    if sel and sel.isdigit():
+                        return int(sel) - 1
+                    return None
+
+                def _prompt_and_pick(candidates, title: str) -> bool:
+                    """候选项结构: [(display_text, element, persist_label)]"""
+                    if title:
+                        self.console.print(title)
+                    for idx, (display_text, _, _) in enumerate(candidates, start=1):
+                        self.console.print(f"{idx}. {display_text}")
+                    picked_index = _ask_choice(len(candidates))
+                    if picked_index is None:
+                        return False
+                    _, element, persist_label = candidates[picked_index]
+                    return _click_term_row(element, persist_label, persist_choice=True)
+
+                desired_strip_lower = (desired or "").strip().lower()
+                # 与配置中的完整显示文案一致（优先于末位 (数字) 归一化，避免 CPAi (1)/(2) 保存后仍反复歧义）
+                display_exact = [
+                    (t, n, e)
+                    for (t, n, e) in options
+                    if (t or "").strip().lower() == desired_strip_lower
+                ]
+                if len(display_exact) == 1:
+                    return _click_term_row(display_exact[0][2], display_exact[0][0])
 
                 # 规范化文本完全一致
                 exact = [(t, n, e) for (t, n, e) in options if n == desired_norm]
                 if len(exact) == 1:
                     return _click_term_row(exact[0][2], exact[0][0])
                 if len(exact) > 1:
-                    self.console.print("\n[bold]检测到多个匹配项，请选择：[/bold]")
-                    for idx, (t, _, _) in enumerate(exact, start=1):
-                        self.console.print(f"{idx}. {t}")
-                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(exact) or "请输入有效编号").ask()
-                    if sel and sel.isdigit():
-                        pick = exact[int(sel) - 1]
-                        try:
-                            pick[2].wait.clickable()
-                        except Exception:
-                            pass
-                        try:
-                            pick[2].click()
-                        except Exception:
-                            pick[2].click(by_js=True)
-                        settings = self.config.load_settings()
-                        settings['template_term'] = pick[0]
-                        self.config.save_settings(settings)
-                        self.template_term = pick[0]
-                        logger.info(f"已选择 Template Term: {pick[0]}")
-                        time.sleep(0.3)
+                    exact_candidates = [(t, e, t) for (t, _, e) in exact]
+                    if _prompt_and_pick(exact_candidates, "\n[bold]检测到多个匹配项，请选择：[/bold]"):
                         return True
 
                 # Levenshtein 相似度选最优（阈值以下视为未匹配，列出全部）
@@ -2383,26 +2401,11 @@ class ProposalSender:
                     top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
                     if len(top) == 1:
                         return _click_term_row(top[0][3], top[0][1])
-                    self.console.print("\n[bold]多个相似候选项（编辑距离并列），请选择：[/bold]")
-                    for idx, (_, t, _, _) in enumerate(top, start=1):
-                        self.console.print(f"{idx}. {t}  [dim](相似度 {best_score:.2f})[/dim]")
-                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(top) or "请输入有效编号").ask()
-                    if sel and sel.isdigit():
-                        row = top[int(sel) - 1]
-                        try:
-                            row[3].wait.clickable()
-                        except Exception:
-                            pass
-                        try:
-                            row[3].click()
-                        except Exception:
-                            row[3].click(by_js=True)
-                        settings = self.config.load_settings()
-                        settings['template_term'] = row[1]
-                        self.config.save_settings(settings)
-                        self.template_term = row[1]
-                        logger.info(f"已选择 Template Term: {row[1]}")
-                        time.sleep(0.3)
+                    top_candidates = [
+                        (f"{t}  [dim](相似度 {best_score:.2f})[/dim]", e, t)
+                        for (_, t, _, e) in top
+                    ]
+                    if _prompt_and_pick(top_candidates, "\n[bold]多个相似候选项（编辑距离并列），请选择：[/bold]"):
                         return True
 
                 if options:
@@ -2410,25 +2413,8 @@ class ProposalSender:
                         f"\n[bold]未匹配到配置项（最高相似度 {best_score:.2f}，需 ≥{term_sim_threshold:.2f}），"
                         "以下为所有可选项：[/bold]"
                     )
-                    for idx, (t, _, _) in enumerate(options, start=1):
-                        self.console.print(f"{idx}. {t}")
-                    sel = questionary.text("请输入编号:", validate=lambda x: x.isdigit() and 1 <= int(x) <= len(options) or "请输入有效编号").ask()
-                    if sel and sel.isdigit():
-                        pick = options[int(sel)-1]
-                        try:
-                            pick[2].wait.clickable()
-                        except Exception:
-                            pass
-                        try:
-                            pick[2].click()
-                        except Exception:
-                            pick[2].click(by_js=True)
-                        settings = self.config.load_settings()
-                        settings['template_term'] = pick[0]
-                        self.config.save_settings(settings)
-                        self.template_term = pick[0]
-                        logger.info(f"已选择 Template Term: {pick[0]}")
-                        time.sleep(0.3)
+                    all_candidates = [(t, e, t) for (t, _, e) in options]
+                    if _prompt_and_pick(all_candidates, ""):
                         return True
 
             try:
