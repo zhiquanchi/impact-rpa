@@ -2171,6 +2171,7 @@ class ProposalSender:
         try:
             desired = (term_text or "Commission Tier Terms").strip()
             desired_norm = re.sub(r'\s+', ' ', desired).strip().lower()
+            logger.debug(f"匹配 Template Term: desired='{desired}', desired_norm='{desired_norm}'")
             term_sim_threshold = 0.72
             term_sim_tie_eps = 0.005
 
@@ -2320,6 +2321,7 @@ class ProposalSender:
                         seen_norm.add(txtn)
                         unique_options.append((txt, txtn, ele))
                 options = unique_options
+                logger.debug(f"找到 {len(options)} 个唯一 Template Term 选项: {[txt for txt, _, _ in options]}")
 
                 def _click_term_row(elem, picked_label: str, persist_choice: bool = False) -> bool:
                     try:
@@ -2365,8 +2367,11 @@ class ProposalSender:
                 ]
                 scored.sort(key=lambda x: -x[0])
                 best_score = scored[0][0] if scored else 0.0
+                logger.debug(f"Template Term 相似度得分: {[(t, f'{score:.3f}') for score, t, _ in scored]}")
+                logger.debug(f"最佳得分: {best_score:.3f}, 阈值: {term_sim_threshold}")
                 if best_score >= term_sim_threshold:
                     top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
+                    logger.debug(f"匹配成功，最佳得分 {best_score:.3f} ≥ 阈值 {term_sim_threshold}，找到 {len(top)} 个候选项")
                     if len(top) == 1:
                         return _click_term_row(top[0][2], top[0][1])
                     top_candidates = [
@@ -2377,6 +2382,7 @@ class ProposalSender:
                         return True
                     return False
 
+                logger.debug(f"匹配失败，最佳得分 {best_score:.3f} < 阈值 {term_sim_threshold}")
                 if options:
                     self.console.print(
                         f"\n[bold]未匹配到配置项（最高相似度 {best_score:.2f}，需 ≥{term_sim_threshold:.2f}），"
@@ -2387,6 +2393,7 @@ class ProposalSender:
                         return True
                     return False
             
+            logger.debug("未找到 Template Term 下拉框或选项")
             self.console.print("\n[bold]未找到可选项[/bold]")
             return False
             
