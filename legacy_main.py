@@ -576,30 +576,240 @@ class BrowserManager:
             logger.warning(f"等待页面就绪失败: {e}")
             return False
     
-    def scroll_down(self, pixels: int = 500) -> bool:
-        """向下滚动页面"""
+    def scroll_down(self, pixels: int = 500, incremental: bool = True) -> bool:
+        """向下滚动页面（增强版：支持智能容器检测和渐进式滚动）
+        
+        Args:
+            pixels: 滚动像素数
+            incremental: True=渐进式滚动（推荐），False=滚动到底部
+        """
         try:
-            self.tab.scroll.down(pixels)
-            return True
+            # 优先尝试使用 JavaScript 智能滚动（参考 gundongchajian 插件）
+            js_result = self.tab.run_js("""
+                (function(pixels, incremental) {
+                    // 查找可滚动的容器元素
+                    function findScrollContainers() {
+                        const containers = [];
+                        const allElements = document.querySelectorAll('*');
+                        
+                        for (const el of allElements) {
+                            const style = window.getComputedStyle(el);
+                            const overflowY = style.overflowY;
+                            const overflow = style.overflow;
+                            
+                            // 检查是否是可滚动容器
+                            if ((overflowY === 'auto' || overflowY === 'scroll' || 
+                                 overflow === 'auto' || overflow === 'scroll') &&
+                                el.scrollHeight > el.clientHeight) {
+                                // 排除 html/body，这些是页面级别的
+                                if (el.tagName.toLowerCase() !== 'html' && 
+                                    el.tagName.toLowerCase() !== 'body') {
+                                    containers.push({
+                                        element: el,
+                                        scrollTop: el.scrollTop,
+                                        scrollHeight: el.scrollHeight,
+                                        clientHeight: el.clientHeight,
+                                        tagName: el.tagName,
+                                        className: el.className,
+                                        id: el.id
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // 按可滚动高度排序，优先选择内容最多的容器
+                        containers.sort((a, b) => 
+                            (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+                        );
+                        
+                        return containers;
+                    }
+                    
+                    const containers = findScrollContainers();
+                    let scrolled = false;
+                    let containerInfo = null;
+                    
+                    if (containers.length > 0) {
+                        // 选择第一个（最大的）滚动容器
+                        const container = containers[0].element;
+                        const prevScrollTop = container.scrollTop;
+                        
+                        if (incremental) {
+                            // 渐进式滚动：滚动指定像素
+                            const step = Math.max(pixels, Math.floor(container.clientHeight * 0.85));
+                            container.scrollTop = prevScrollTop + step;
+                        } else {
+                            // 滚动到底部
+                            container.scrollTop = container.scrollHeight;
+                        }
+                        
+                        const actualScrolled = Math.abs(container.scrollTop - prevScrollTop);
+                        scrolled = actualScrolled > 1;
+                        
+                        containerInfo = {
+                            containerFound: true,
+                            containerTag: container.tagName.toLowerCase(),
+                            containerId: container.id || '',
+                            containerClass: (container.className || '').toString().slice(0, 50),
+                            prevScrollTop: prevScrollTop,
+                            newScrollTop: container.scrollTop,
+                            actualScrolled: actualScrolled,
+                            scrollHeight: container.scrollHeight,
+                            clientHeight: container.clientHeight
+                        };
+                    } else {
+                        // 没有找到内部滚动容器，回退到 window 滚动
+                        const beforeY = window.scrollY || window.pageYOffset;
+                        
+                        if (incremental) {
+                            window.scrollBy({
+                                top: Math.max(pixels, Math.floor(window.innerHeight * 0.85)),
+                                left: 0,
+                                behavior: 'smooth'
+                            });
+                        } else {
+                            window.scrollTo({
+                                top: document.body.scrollHeight,
+                                behavior: 'smooth'
+                            });
+                        }
+                        
+                        const afterY = window.scrollY || window.pageYOffset;
+                        const actualScrolled = Math.abs(afterY - beforeY);
+                        scrolled = actualScrolled > 1;
+                        
+                        containerInfo = {
+                            containerFound: false,
+                            prevScrollTop: beforeY,
+                            newScrollTop: afterY,
+                            actualScrolled: actualScrolled
+                        };
+                    }
+                    
+                    return {
+                        success: scrolled,
+                        container: containerInfo
+                    };
+                })(${pixels}, ${incremental})
+            """)
+            
+            # 处理 JavaScript 返回的结果
+            if js_result and isinstance(js_result, dict):
+                success = js_result.get('success', False)
+                container_info = js_result.get('container', {})
+                
+                if container_info:
+                    container_found = container_info.get('containerFound', False)
+                    actual_scrolled = container_info.get('actualScrolled', 0)
+                    
+                    if container_found:
+                        container_tag = container_info.get('containerTag', 'unknown')
+                        container_id = container_info.get('containerId', '')
+                        logger.debug(
+                            f"智能滚动成功，容器: {container_tag}"
+                            f"{'#' + container_id if container_id else ''}, "
+                            f"实际滚动: {actual_scrolled:.0f}px"
+                        )
+                    else:
+                        logger.debug(f"使用 window 滚动，实际滚动: {actual_scrolled:.0f}px")
+                
+                return success
+            else:
+                logger.warning("JavaScript 滚动返回结果异常")
+                return False
+                
         except Exception as e:
-            logger.warning(f"滚动失败: {e}")
-            shot = self._capture_screenshot(f"scroll_down_{pixels}")
-            exception_handler.log_exception(
-                e,
-                context={
-                    "operation": "向下滚动",
-                    "pixels": pixels,
-                    "page": self._get_page_context(),
-                    "caller": self._caller_brief(),
-                    "screenshot": shot,
-                },
-            )
-            return False
+            logger.warning(f"智能滚动失败，回退到传统方式: {e}")
+            # 回退到传统的 DrissionPage scroll 方法
+            try:
+                self.tab.scroll.down(pixels)
+                return True
+            except Exception as fallback_err:
+                logger.error(f"传统滚动也失败: {fallback_err}")
+                shot = self._capture_screenshot(f"scroll_down_{pixels}")
+                exception_handler.log_exception(
+                    fallback_err,
+                    context={
+                        "operation": "向下滚动",
+                        "pixels": pixels,
+                        "page": self._get_page_context(),
+                        "caller": self._caller_brief(),
+                        "screenshot": shot,
+                    },
+                )
+                return False
     
     def scroll_to_element(self, element) -> bool:
-        """滚动到元素可见"""
+        """滚动到元素可见（增强版：支持智能容器检测）"""
         try:
-            self.tab.scroll.to_see(element)
+            # 尝试使用 JavaScript 智能滚动到元素
+            self.tab.run_js("""
+                (function() {
+                    // 查找元素
+                    const target = arguments[0];
+                    if (!target || !target.scrollIntoView) {
+                        return { success: false, reason: 'element_not_found' };
+                    }
+                    
+                    // 查找滚动容器
+                    function findScrollContainer(el) {
+                        let current = el;
+                        let guard = 0;
+                        while (current && guard < 40) {
+                            const parent = current.parentElement || 
+                                          (current.getRootNode && current.getRootNode().host);
+                            if (!parent) break;
+                            
+                            const style = window.getComputedStyle(parent);
+                            const overflowY = style.overflowY;
+                            const overflow = style.overflow;
+                            
+                            if (/(auto|scroll)/.test(overflowY + overflow)) {
+                                return {
+                                    element: parent,
+                                    scrollTop: parent.scrollTop,
+                                    scrollHeight: parent.scrollHeight,
+                                    clientHeight: parent.clientHeight,
+                                    tagName: parent.tagName,
+                                    id: parent.id,
+                                    className: parent.className
+                                };
+                            }
+                            
+                            current = parent;
+                            guard++;
+                        }
+                        return null;
+                    }
+                    
+                    const container = findScrollContainer(target);
+                    
+                    if (container) {
+                        // 滚动容器
+                        const prevScrollTop = container.element.scrollTop;
+                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        const actualScrolled = Math.abs(container.element.scrollTop - prevScrollTop);
+                        
+                        return {
+                            success: true,
+                            method: 'container_scroll',
+                            container: {
+                                tagName: container.element.tagName.toLowerCase(),
+                                id: container.element.id || '',
+                                actualScrolled: actualScrolled
+                            }
+                        };
+                    } else {
+                        // 回退到默认的 scrollIntoView
+                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        return {
+                            success: true,
+                            method: 'default_scroll_into_view'
+                        };
+                    }
+                })(arguments[0])
+            """, element)
+            
             return True
         except Exception as e:
             logger.warning(f"滚动到元素失败: {e}")
@@ -615,6 +825,55 @@ class BrowserManager:
                 },
             )
             return False
+
+    def get_scroll_container_info(self) -> dict:
+        """获取当前页面的滚动容器信息（用于调试和诊断）"""
+        try:
+            info = self.tab.run_js("""
+                (function() {
+                    function findScrollContainers() {
+                        const containers = [];
+                        const allElements = document.querySelectorAll('*');
+                        
+                        for (const el of allElements) {
+                            const style = window.getComputedStyle(el);
+                            const overflowY = style.overflowY;
+                            const overflow = style.overflow;
+                            
+                            if ((overflowY === 'auto' || overflowY === 'scroll' || 
+                                 overflow === 'auto' || overflow === 'scroll') &&
+                                el.scrollHeight > el.clientHeight) {
+                                if (el.tagName.toLowerCase() !== 'html' && 
+                                    el.tagName.toLowerCase() !== 'body') {
+                                    containers.push({
+                                        tagName: el.tagName.toLowerCase(),
+                                        id: el.id || '',
+                                        className: (el.className || '').toString().slice(0, 80),
+                                        scrollTop: el.scrollTop,
+                                        scrollHeight: el.scrollHeight,
+                                        clientHeight: el.clientHeight,
+                                        scrollable: el.scrollHeight - el.clientHeight
+                                    });
+                                }
+                            }
+                        }
+                        
+                        containers.sort((a, b) => b.scrollable - a.scrollable);
+                        return containers.slice(0, 5); // 返回前5个最大的容器
+                    }
+                    
+                    return {
+                        containers: findScrollContainers(),
+                        windowScrollY: window.scrollY || window.pageYOffset,
+                        documentHeight: document.body.scrollHeight
+                    };
+                })()
+            """)
+            
+            return info if isinstance(info, dict) else {}
+        except Exception as e:
+            logger.warning(f"获取滚动容器信息失败: {e}")
+            return {}
     
     def navigate(self, url: str) -> bool:
         """导航到指定URL"""
@@ -1113,7 +1372,7 @@ class SendProposalsResult:
 
 class ProposalSender:
     """Proposal发送类，负责核心的RPA操作"""
-    
+
     def __init__(self, browser: BrowserManager, template_manager: TemplateManager, console: Console, config: ConfigManager):
         self.browser = browser
         self.template_manager = template_manager
@@ -1133,10 +1392,10 @@ class ProposalSender:
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
         # 可以通过检查页面上是否有已发送的标记、按钮状态变化、或DOM结构变化来判断
         self.config = config
-        
+
         # 初始化日期选择器
         self.date_picker = DatePicker(console)
-        
+
         # 配置视觉 RPA 处理器（如果启用）
         self._setup_vision_rpa(settings)
 
@@ -1147,6 +1406,141 @@ class ProposalSender:
                 store.subscribe("settings", lambda _k, payload: self.refresh_from_settings(payload))
         except Exception:
             pass
+
+        # 滚动进度追踪（防卡顿机制）
+        self._scroll_progress = {
+            'last_element_count': 0,
+            'no_progress_frames': 0,
+            'last_scroll_position': 0,
+            'stuck_frames': 0,
+            'max_stuck_frames': 30,  # 连续30帧无进展认为卡顿
+        }
+
+    def _reset_scroll_progress(self):
+        """重置滚动进度追踪"""
+        self._scroll_progress = {
+            'last_element_count': 0,
+            'no_progress_frames': 0,
+            'last_scroll_position': 0,
+            'stuck_frames': 0,
+            'max_stuck_frames': 30,
+        }
+
+    def _check_scroll_progress(self, elements_count: int) -> dict:
+        """检查滚动进度，检测是否卡顿
+        
+        Returns:
+            dict: {
+                'is_stuck': bool,  # 是否卡顿
+                'progress_type': str,  # 'new_elements', 'scrolled', 'stuck'
+                'details': str  # 详细信息
+            }
+        """
+        try:
+            # 获取当前滚动位置
+            current_scroll = 0
+            try:
+                scroll_info = self.browser.tab.run_js("""
+                    (function() {
+                        // 查找主要滚动容器
+                        function findMainScrollContainer() {
+                            const containers = [];
+                            const allElements = document.querySelectorAll('*');
+                            
+                            for (const el of allElements) {
+                                const style = window.getComputedStyle(el);
+                                if ((style.overflowY === 'auto' || style.overflowY === 'scroll' ||
+                                     style.overflow === 'auto' || style.overflow === 'scroll') &&
+                                    el.scrollHeight > el.clientHeight &&
+                                    el.tagName.toLowerCase() !== 'html' &&
+                                    el.tagName.toLowerCase() !== 'body') {
+                                    containers.push(el);
+                                }
+                            }
+                            
+                            if (containers.length > 0) {
+                                containers.sort((a, b) => 
+                                    (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+                                );
+                                return containers[0];
+                            }
+                            return null;
+                        }
+                        
+                        const container = findMainScrollContainer();
+                        if (container) {
+                            return {
+                                type: 'container',
+                                position: container.scrollTop,
+                                maxScroll: container.scrollHeight - container.clientHeight,
+                                tagName: container.tagName.toLowerCase(),
+                                id: container.id || ''
+                            };
+                        }
+                        
+                        return {
+                            type: 'window',
+                            position: window.scrollY || window.pageYOffset,
+                            maxScroll: document.body.scrollHeight - window.innerHeight
+                        };
+                    })()
+                """)
+                
+                if scroll_info and isinstance(scroll_info, dict):
+                    current_scroll = scroll_info.get('position', 0)
+            except Exception as e:
+                logger.debug(f"获取滚动位置失败: {e}")
+                current_scroll = self._scroll_progress['last_scroll_position']
+            
+            # 检查是否有新元素
+            has_new_elements = elements_count > self._scroll_progress['last_element_count']
+            
+            # 检查是否有实际滚动
+            has_scrolled = abs(current_scroll - self._scroll_progress['last_scroll_position']) > 10
+            
+            # 更新进度
+            if has_new_elements:
+                self._scroll_progress['no_progress_frames'] = 0
+                self._scroll_progress['stuck_frames'] = 0
+                self._scroll_progress['last_element_count'] = elements_count
+                self._scroll_progress['last_scroll_position'] = current_scroll
+                
+                return {
+                    'is_stuck': False,
+                    'progress_type': 'new_elements',
+                    'details': f'检测到新元素 ({elements_count} 个)'
+                }
+            
+            if has_scrolled:
+                self._scroll_progress['stuck_frames'] = 0
+                self._scroll_progress['last_scroll_position'] = current_scroll
+                # 注意：不重置 no_progress_frames，因为可能是虚拟列表
+                
+                return {
+                    'is_stuck': False,
+                    'progress_type': 'scrolled',
+                    'details': f'已滚动到 {current_scroll:.0f}px'
+                }
+            
+            # 既没有新元素，也没有滚动
+            self._scroll_progress['no_progress_frames'] += 1
+            self._scroll_progress['stuck_frames'] += 1
+            
+            is_stuck = self._scroll_progress['stuck_frames'] >= self._scroll_progress['max_stuck_frames']
+            
+            return {
+                'is_stuck': is_stuck,
+                'progress_type': 'stuck',
+                'details': f'连续 {self._scroll_progress["stuck_frames"]} 帧无进展'
+            }
+            
+        except Exception as e:
+            logger.warning(f"检查滚动进度失败: {e}")
+            return {
+                'is_stuck': False,
+                'progress_type': 'error',
+                'details': str(e)
+            }
 
     def _apply_settings(self, settings: dict) -> None:
         """将 settings 应用到实例字段（支持热刷新）。"""
@@ -1353,7 +1747,10 @@ class ProposalSender:
             logger.info("[DRY-RUN] 开发测试模式已启用，不会点击弹窗中的提交按钮")
         
         self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]")
-        
+
+        # 重置滚动进度追踪
+        self._reset_scroll_progress()
+
         # 循环条件：未达到目标数量 且 未超过最大滚动次数（安全限制）
         while clicked_count < max_count and total_scrolls < effective_max_scrolls:
             # 检查是否需要重连
@@ -1439,6 +1836,20 @@ class ProposalSender:
                                 "准备滚动加载更多。"
                             )
                         empty_scrolls += 1
+                        
+                        # 检查滚动进度（防卡顿机制）
+                        scroll_check = self._check_scroll_progress(raw_buttons_count)
+                        if scroll_check['is_stuck']:
+                            logger.warning(
+                                f"检测到滚动卡顿：{scroll_check['details']}，"
+                                f"提前退出（已发送 {clicked_count}/{max_count}）"
+                            )
+                            self.console.print(
+                                f"\n[yellow]滚动连续无进展（{scroll_check['details']}），提前结束。"
+                                f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
+                            )
+                            break
+                        
                         # 连续多次空滚动仍未发现新按钮，则提前退出，避免看起来像“卡死/报错”
                         max_empty_scrolls = max(20, max_count * 2)
                         if empty_scrolls >= max_empty_scrolls:
@@ -1452,7 +1863,8 @@ class ProposalSender:
                             break
                         logger.debug(
                             f"执行第 {total_scrolls + 1} 次滚动（空滚动累计: {empty_scrolls}/{max_empty_scrolls}，"
-                            f"已发送: {clicked_count}/{max_count}，累计检测到按钮: {total_detected_buttons}）。"
+                            f"已发送: {clicked_count}/{max_count}，累计检测到按钮: {total_detected_buttons}，"
+                            f"滚动状态: {scroll_check['details']}）。"
                         )
                         if not self.browser.scroll_down(500):
                             consecutive_errors += 1
@@ -1571,6 +1983,19 @@ class ProposalSender:
                     break
                 
                 if should_scroll_after_batch:
+                    # 检查滚动进度（防卡顿机制）
+                    scroll_check = self._check_scroll_progress(len(send_proposal_buttons))
+                    if scroll_check['is_stuck']:
+                        logger.warning(
+                            f"批次后滚动检测到卡顿：{scroll_check['details']}，"
+                            f"提前退出（已发送 {clicked_count}/{max_count}）"
+                        )
+                        self.console.print(
+                            f"\n[yellow]滚动连续无进展（{scroll_check['details']}），提前结束。"
+                            f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
+                        )
+                        break
+                    
                     if not self.browser.scroll_down(500):
                         consecutive_errors += 1
                         continue
@@ -1580,10 +2005,23 @@ class ProposalSender:
                         f"[dim]当前批次已发送完，滚动第 {total_scrolls} 次加载更多按钮[/dim]"
                     )
                     continue
-                
+
                 if pending_batch_buttons > 0:
                     # 仍有待发送的已计数按钮，继续下一轮尝试，不滚动
                     continue
+
+                # 检查滚动进度（防卡顿机制）
+                scroll_check = self._check_scroll_progress(len(send_proposal_buttons))
+                if scroll_check['is_stuck']:
+                    logger.warning(
+                        f"常规滚动检测到卡顿：{scroll_check['details']}，"
+                        f"提前退出（已发送 {clicked_count}/{max_count}）"
+                    )
+                    self.console.print(
+                        f"\n[yellow]滚动连续无进展（{scroll_check['details']}），提前结束。"
+                        f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
+                    )
+                    break
 
                 if not self.browser.scroll_down(500):
                     consecutive_errors += 1
