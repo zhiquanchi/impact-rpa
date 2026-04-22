@@ -1690,13 +1690,19 @@ class ProposalSender:
 
         return results
     
-    def send_proposals(self, max_count: int = 10, template_content: str | None = None) -> SendProposalsResult:
+    def send_proposals(
+        self,
+        max_count: int = 10,
+        template_content: str | None = None,
+        start_index: int = 1,
+    ) -> SendProposalsResult:
         """
         循环点击页面上所有的 Send Proposal 按钮
         
         Args:
             max_count: 最大发送数量
             template_content: 留言模板内容，None 时使用当前激活模板
+            start_index: 起始序号（从 1 开始）。例如 3 表示跳过前 2 个可发送目标
             
         Returns:
             SendProposalsResult(clicked_count, completed_all)。
@@ -1715,7 +1721,13 @@ class ProposalSender:
         ))
         questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
         
-        logger.info(f"开始发送 Send Proposal，目标数量: {max_count}")
+        if start_index < 1:
+            logger.warning(f"收到无效 start_index={start_index}，已回退为 1")
+            start_index = 1
+        skip_remaining = start_index - 1
+        skipped_before_start = 0
+
+        logger.info(f"开始发送 Send Proposal，目标数量: {max_count}，起始序号: {start_index}")
 
         # 缓存当前日期，保证同一批次内 T+1 一致
         self._cached_today = date.today()
@@ -1746,7 +1758,12 @@ class ProposalSender:
             ))
             logger.info("[DRY-RUN] 开发测试模式已启用，不会点击弹窗中的提交按钮")
         
-        self.console.print(f"\n[bold cyan]开始循环点击 Send Proposal 按钮 (目标: {max_count} 个，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]")
+        self.console.print(
+            f"\n[bold cyan]开始循环点击 Send Proposal 按钮 "
+            f"(目标: {max_count} 个，起始序号: {start_index}，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]"
+        )
+        if skip_remaining > 0:
+            self.console.print(f"[dim]将先跳过前 {skip_remaining} 个可发送目标[/dim]")
 
         # 重置滚动进度追踪
         self._reset_scroll_progress()
@@ -1898,6 +1915,23 @@ class ProposalSender:
                         self.console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
                         self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
                         return SendProposalsResult(clicked_count=clicked_count, completed_all=True)
+
+                    if skip_remaining > 0:
+                        if self._mark_button_state(btn, self.clicked_attr):
+                            skip_remaining -= 1
+                            skipped_before_start += 1
+                            if pending_batch_buttons > 0:
+                                pending_batch_buttons = max(pending_batch_buttons - 1, 0)
+                            if skip_remaining == 0:
+                                logger.info(f"已完成起始偏移，累计跳过 {skipped_before_start} 个按钮，开始正式发送")
+                                self.console.print(
+                                    f"[dim]已跳过前 {skipped_before_start} 个目标，开始正式发送[/dim]"
+                                )
+                            if pending_batch_buttons == 0:
+                                should_scroll_after_batch = True
+                        else:
+                            logger.warning("起始偏移阶段标记按钮失败，稍后重试该按钮")
+                        continue
                     
                     try:
                         selected_tab = self._get_selected_tab_value(btn)
