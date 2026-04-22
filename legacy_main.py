@@ -4467,8 +4467,22 @@ class ImpactRPA:
         
         settings = self.config.load_settings()
         max_count = settings['max_proposals']
+        start_input = questionary.text("请输入起始序号 N (从 1 开始，默认 1):", default="1").ask()
+        if start_input is None:
+            self.console.print("[yellow]已取消[/yellow]")
+            return
+        try:
+            start_index = int(start_input.strip()) if start_input.strip() else 1
+        except ValueError:
+            self.console.print("[red]请输入有效的整数[/red]")
+            return
+        if start_index < 1:
+            self.console.print("[red]起始序号需大于等于 1[/red]")
+            return
         
-        self.console.print(f"\n[cyan]准备发送 [bold]{max_count}[/bold] 个 Send Proposal[/cyan]")
+        self.console.print(
+            f"\n[cyan]准备发送 [bold]{max_count}[/bold] 个 Send Proposal（从第 [bold]{start_index}[/bold] 个开始）[/cyan]"
+        )
         
         template = self.template_manager.get_active_template()
         if not template:
@@ -4479,12 +4493,15 @@ class ImpactRPA:
             self.console.print("\n[bold]当前留言模板预览:[/bold]")
             self.console.print(Panel(template, border_style="dim"))
         
-        if not questionary.confirm(f"确认开始发送 {max_count} 个 Proposal?", default=False).ask():
+        if not questionary.confirm(
+            f"确认从第 {start_index} 个开始发送 {max_count} 个 Proposal?",
+            default=False,
+        ).ask():
             self.console.print("[yellow]已取消[/yellow]")
             return
         
         try:
-            result = self.proposal_sender.send_proposals(max_count, template)
+            result = self.proposal_sender.send_proposals(max_count, template, start_index=start_index)
             self._notify_proposal_run(result=result, error=None)
         except Exception as e:
             self._notify_proposal_run(result=None, error=e)
