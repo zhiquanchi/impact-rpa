@@ -347,7 +347,24 @@ class BrowserManager:
     
     def is_connected(self) -> bool:
         """检查浏览器是否已连接"""
-        return self.tab is not None
+        if self.browser is None or self.tab is None:
+            return False
+        try:
+            latest_tab = getattr(self.browser, "latest_tab", None)
+            if latest_tab is not None:
+                try:
+                    impact_tab = self.browser.get_tab(url='https://app.impact.com/secure/')
+                except Exception:
+                    impact_tab = None
+                self.tab = impact_tab or latest_tab
+            _ = self.tab.url
+            return True
+        except (PageDisconnectedError, ContextLostError):
+            logger.warning("浏览器连接已失效：页面上下文已断开")
+            return False
+        except Exception as e:
+            logger.debug(f"浏览器连接检测失败: {e}")
+            return False
 
     def _get_page_context(self) -> dict:
         """获取当前页面上下文信息（用于异常日志定位问题）。"""
@@ -1379,6 +1396,7 @@ class ProposalSender:
         self.console = console
         self.max_scrolls = 100
         self.max_consecutive_errors = 3
+        self._stop_requested = False
         # 从配置中读取弹窗等待时间，默认 20 秒，用于应对 iframe 加载较慢的情况
         settings = config.load_settings()
         self._apply_settings(settings)
@@ -1415,6 +1433,14 @@ class ProposalSender:
             'stuck_frames': 0,
             'max_stuck_frames': 30,  # 连续30帧无进展认为卡顿
         }
+
+    def request_stop(self) -> None:
+        """请求在下一个安全检查点停止当前批次。"""
+        self._stop_requested = True
+        logger.info("收到停止请求，将在下一个安全检查点结束当前批次")
+
+    def clear_stop_request(self) -> None:
+        self._stop_requested = False
 
     def _reset_scroll_progress(self):
         """重置滚动进度追踪"""
@@ -1695,6 +1721,7 @@ class ProposalSender:
         max_count: int = 10,
         template_content: str | None = None,
         start_index: int = 1,
+        skip_ready_prompt: bool = False,
     ) -> SendProposalsResult:
         """
         循环点击页面上所有的 Send Proposal 按钮
@@ -1709,17 +1736,19 @@ class ProposalSender:
             completed_all 仅当达到 max_count 时为 True；重连失败等会 raise，不返回。
         """
         self._maybe_refresh_settings()
+        self.clear_stop_request()
         # 等待用户操作完成
-        self.console.print(Panel(
-            "[bold]请在浏览器中完成以下操作：[/bold]\n"
-            "1. 导航到目标页面\n"
-            "2. 登录账号（如果需要）\n"
-            "3. 完成人机验证（如果出现）\n"
-            "4. 确保页面已正常加载",
-            title="[cyan]提示[/cyan]",
-            border_style="cyan"
-        ))
-        questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
+        if not skip_ready_prompt:
+            self.console.print(Panel(
+                "[bold]请在浏览器中完成以下操作：[/bold]\n"
+                "1. 导航到目标页面\n"
+                "2. 登录账号（如果需要）\n"
+                "3. 完成人机验证（如果出现）\n"
+                "4. 确保页面已正常加载",
+                title="[cyan]提示[/cyan]",
+                border_style="cyan"
+            ))
+            questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
         
         if start_index < 1:
             logger.warning(f"收到无效 start_index={start_index}，已回退为 1")
@@ -1770,6 +1799,10 @@ class ProposalSender:
 
         # 循环条件：未达到目标数量 且 未超过最大滚动次数（安全限制）
         while clicked_count < max_count and total_scrolls < effective_max_scrolls:
+            if self._stop_requested:
+                self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
+                logger.info(f"发送任务被请求停止，已发送 {clicked_count}/{max_count} 个")
+                break
             # 检查是否需要重连
             if consecutive_errors >= self.max_consecutive_errors:
                 self.console.print("[yellow]连续多次错误，尝试重新连接浏览器...[/yellow]")
@@ -1910,6 +1943,13 @@ class ProposalSender:
                 # 遍历当前可见的按钮并点击
                 should_scroll_after_batch = False
                 for btn in send_proposal_buttons:
+                    if self._stop_requested:
+                        self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
+                        logger.info(f"发送任务在批次内被请求停止，已发送 {clicked_count}/{max_count} 个")
+                        return SendProposalsResult(
+                            clicked_count=clicked_count,
+                            completed_all=False,
+                        )
                     if clicked_count >= max_count:
                         logger.info(f"已达到目标数量 {max_count}，停止发送")
                         self.console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
@@ -2307,6 +2347,7 @@ class ProposalSender:
             SendProposalsResult: 发送结果
         """
         self._maybe_refresh_settings()
+        self.clear_stop_request()
         if template_content is None:
             template_content = self.template_manager.get_active_template()
         
@@ -2329,6 +2370,10 @@ class ProposalSender:
         logger.info(f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}")
 
         while sent_count < max_count:
+            if self._stop_requested:
+                self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
+                logger.info(f"Creator Search 任务被请求停止，已发送 {sent_count}/{max_count} 个")
+                break
             if consecutive_errors >= max_consecutive_errors:
                 self.console.print(f"[red]连续 {max_consecutive_errors} 次错误，停止发送[/red]")
                 break
@@ -4368,7 +4413,7 @@ class MenuUI:
             questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
         except ImportError:
             self.console.print("[red]错误：无法导入更新管理器模块[/red]")
-            self.console.print("[yellow]请确保已安装 dulwich 库：pip install dulwich[/yellow]")
+            self.console.print("[yellow]请检查 update_manager.py 是否存在且依赖已正确安装[/yellow]")
             questionary.press_any_key_to_continue("按任意键返回主菜单...").ask()
         except Exception as e:
             self.console.print(f"[red]更新失败: {e}[/red]")

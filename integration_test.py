@@ -17,10 +17,9 @@ except ImportError as e:
     print(f"   ✗ Failed to import update_manager: {e}")
     sys.exit(1)
 
-# Test 2: Check dependencies
+# Test 2: Check dependencies and native git
 print("\n2. Checking dependencies...")
 dependencies = {
-    'dulwich': 'Dulwich',
     'loguru': 'Loguru',
     'rich': 'Rich',
     'questionary': 'Questionary'
@@ -35,9 +34,27 @@ for module, name in dependencies.items():
         print(f"   ✗ {name} missing")
         missing.append(name)
 
+try:
+    import subprocess
+    result = subprocess.run(
+        ['git', '--version'],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding='utf-8',
+        errors='replace',
+    )
+    if result.returncode == 0:
+        print(f"   ✓ Native git available: {result.stdout.strip()}")
+    else:
+        print("   ✗ Native git unavailable")
+        missing.append('git')
+except FileNotFoundError:
+    print("   ✗ Native git unavailable")
+    missing.append('git')
+
 if missing:
     print(f"\n   Missing dependencies: {', '.join(missing)}")
-    print("   Install with: pip install " + " ".join(m.lower() for m in missing))
     sys.exit(1)
 
 # Test 3: Create UpdateManager instance
@@ -67,31 +84,33 @@ else:
     sys.exit(1)
 
 # Test 5: Check menu integration
-print("\n5. Checking main.py integration...")
+print("\n5. Checking menu integration...")
 try:
-    with open('main.py', 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    checks = {
-        '🔄 检查并更新代码': 'Menu option exists',
-        'def check_and_update': 'MenuUI method exists',
-        "choice == '7'": 'Menu handler exists',
-        'self.menu.check_and_update()': 'Handler calls method'
-    }
-    
+    files_and_checks = [
+        ('legacy_main.py', {
+            '🔄 检查并更新代码': 'Menu option exists',
+            'def check_and_update': 'MenuUI method exists',
+        }),
+        ('app.py', {
+            'self.menu.check_and_update()': 'App handler calls method',
+        }),
+    ]
+
     all_found = True
-    for check, desc in checks.items():
-        if check in content:
-            print(f"   ✓ {desc}")
-        else:
-            print(f"   ✗ {desc} - NOT FOUND")
-            all_found = False
-    
+    for filename, checks in files_and_checks:
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+        for check, desc in checks.items():
+            if check in content:
+                print(f"   ✓ {desc} ({filename})")
+            else:
+                print(f"   ✗ {desc} - NOT FOUND in {filename}")
+                all_found = False
+
     if not all_found:
         sys.exit(1)
-        
 except Exception as e:
-    print(f"   ✗ Failed to check main.py: {e}")
+    print(f"   ✗ Failed to check menu integration: {e}")
     sys.exit(1)
 
 # Test 6: Verify gitignore
@@ -149,5 +168,4 @@ print("\nThe update feature is fully integrated and ready to use!")
 print("\nTo use:")
 print("1. Run: python main.py")
 print("2. Select option 7: 🔄 检查并更新代码")
-print("\nNote: Ensure 'dulwich' is installed: pip install dulwich")
 sys.exit(0)

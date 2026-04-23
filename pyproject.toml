@@ -6,11 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "drissionpage>=4.1.1.2",
-    "dulwich>=0.21.0",
     "loguru>=0.7.3",
     "plyer>=2.1.0",
     "pydantic>=2.7.0",
     "pyperclip>=1.11.0",
+    "pyqt6>=6.11.0",
     "questionary>=2.1.1",
     "rich>=14.2.0",
 ]
