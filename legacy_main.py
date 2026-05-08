@@ -2133,13 +2133,11 @@ class ProposalSender:
         skip_names: set[str] | None = None,
     ) -> tuple[bool, str | None, str | None, bool]:
         """
-        在 Creator Search 表格中点击指定行，再点击出现的 Send Proposal 按钮，
+        在 Creator Search / Partner Marketplace 中点击指定行，再点击出现的 Send Proposal 按钮，
         弹窗后的处理与 send_proposals 中点击 Send Proposal 之后一致（_handle_proposal_modal）。
 
-        选择器: #pd-creator-rt-search-ui div.table-body > div:nth-child(N)，N 为行号（从 1 起）。
-
         Args:
-            row_index: 表格行号，对应 div:nth-child(row_index)，从 1 开始。
+            row_index: 表格行号，从 1 开始。
             template_content: 留言模板内容，None 时使用当前激活模板。
             skip_names: 需要跳过的 Creator 名称集合（已发送过的）。
 
@@ -2151,17 +2149,29 @@ class ProposalSender:
         """
         if template_content is None:
             template_content = self.template_manager.get_active_template()
-        row_selector = (
-            f"#pd-creator-rt-search-ui div.table-body > div:nth-child({row_index})"
-        )
         psi_id = None
         creator_name = None
         try:
-            row_el = self.browser.find_element(f"css:{row_selector}", timeout=5)
+            # 两种布局，在 Creator Search 和 Partner Marketplace 中一致：
+            # 1) 卡片/网格视图：css:.iui-grid > .iui-card:nth-child(N) .creator-card
+            # 2) 表格视图屏底：css:div.table-body > div:nth-child(N)
+            row_el = self.browser.find_element(
+                f"css:.iui-grid > .iui-card:nth-child({row_index}) .creator-card",
+                timeout=3,
+            )
             if not row_el:
-                logger.warning(f"未找到表格行: {row_selector}")
+                row_el = self.browser.find_element(
+                    f"css:div.table-body > div:nth-child({row_index})",
+                    timeout=3,
+                )
+
+            if not row_el:
+                logger.warning(f"未找到表格行: row_index={row_index}")
                 self.console.print(f"[red]未找到表格行 (第 {row_index} 行)[/red]")
                 return False, None, None, False
+
+            logger.debug(f"第 {row_index} 行已定位")
+
             self.browser.scroll_to_element(row_el)
             time.sleep(0.2)
             row_el.click(by_js=True)
