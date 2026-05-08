@@ -2560,6 +2560,203 @@ class ProposalSender:
                 raise
             logger.error(f"处理弹窗失败: {e}")
         return False
+
+    def _is_date_like_trigger(self, ele) -> bool:
+        """判断元素是否属于日期/时间相关触发器，避免误点到 Contract Dates 区域的控件。
+
+        真实 DOM 规律：
+        - 日期选择按钮：data-testid="uicl-date-input"，icon class 含 "calendar-vnext"
+        - 时分/AM-PM/时区下拉：data-testid="uicl-multi-select-input-button"，
+          但其 field-label-pair 祖先节点的 class 含 "standard-date-time-input"
+        - Template Term 的 field-label-pair class 含 "select-input"（不含 standard-date-time-input）
+        """
+        if not ele:
+            return True
+
+        # 日期按钮：data-testid="uicl-date-input"
+        try:
+            data_testid = (ele.attr('data-testid') or '').strip().lower()
+            if data_testid == 'uicl-date-input':
+                return True
+        except Exception:
+            pass
+
+        # aria-label 含 date/calendar
+        try:
+            aria_label = (ele.attr('aria-label') or '').strip().lower()
+            if 'date' in aria_label or 'calendar' in aria_label:
+                return True
+        except Exception:
+            pass
+
+        # 文本内容形如日期格式（例如 "May 8, 2026"）
+        try:
+            text = re.sub(r'\s+', ' ', (ele.text or '').strip())
+            if re.match(r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$', text):
+                return True
+        except Exception:
+            pass
+
+        # 向上找祖先节点，检查是否在 standard-date-time-input 的 field-label-pair 内
+        # 这能识别时分/AM-PM/时区下拉——它们与日期按钮同属 Contract Dates 区域
+        try:
+            cur = ele.parent()
+            for _ in range(6):
+                if not cur:
+                    break
+                cls = (cur.attr('class') or '')
+                if 'standard-date-time-input' in cls:
+                    return True
+                # 到达 iui-form-section 层级就停止向上检查，避免误判
+                if 'iui-form-section' in cls:
+                    break
+                cur = cur.parent()
+        except Exception:
+            pass
+
+        return False
+
+    def _find_template_term_trigger(self, iframe):
+        """仅在 Template Term 字段容器内寻找下拉触发器，避免误点日期/时区等其他控件。
+
+        定位策略（按优先级）：
+        1. 通过 input[name="insertionOrderId"] 精确定位 Template Term 的 multiselect 容器
+           （该隐藏字段唯一属于 Template Term 组件，Contract Dates 区域没有此 name）
+        2. 通过 Template Term 文字标签向上找到 iui-form-section，
+           再在其内找 class 含 "select-input" 的 field-label-pair（排除 standard-date-time-input）
+        """
+        # ── 策略1：通过唯一隐藏字段 name="insertionOrderId" 精确定位 ──────────────
+        # 真实 DOM 结构：Template Term multiselect 内有 <input type="hidden" name="insertionOrderId">
+        # Contract Dates 区域的 name 是 startDateTime/endDateTime/lengthOption，不含此字段
+        try:
+            hidden = iframe.ele('css:input[name="insertionOrderId"]', timeout=2)
+            if hidden:
+                # 向上至多爬 3 层，找到 data-testid="uicl-multiselect-input" 容器
+                cur = hidden.parent()
+                for _ in range(3):
+                    if not cur:
+                        break
+                    if (cur.attr('data-testid') or '') == 'uicl-multiselect-input':
+                        trigger = cur.ele(
+                            'css:button[data-testid="uicl-multi-select-input-button"]',
+                            timeout=0.3,
+                        )
+                        if trigger and not self._is_date_like_trigger(trigger):
+                            logger.debug("Template Term 触发器：通过 input[name=insertionOrderId] 定位")
+                            return trigger
+                        break
+                    cur = cur.parent()
+        except Exception as e:
+            logger.debug(f"策略1定位 Template Term 触发器失败: {e}")
+
+        # ── 策略2：通过 Template Term 标签 → iui-form-section → select-input 字段对 ──
+        # 真实 DOM：Template Term 的 field-label-pair class 含 "select-input"
+        # Contract Dates 的 field-label-pair class 含 "standard-date-time-input"，不会被误选
+        try:
+            term_label = iframe.ele('text:Template Term', timeout=2)
+            if not term_label:
+                logger.debug("未找到 Template Term 标签")
+                return None
+
+            # 向上找到 iui-form-section（最多爬 5 层）
+            cur = term_label.parent()
+            for _ in range(5):
+                if not cur:
+                    break
+                cls = (cur.attr('class') or '')
+                if 'iui-form-section' in cls:
+                    # 只在含 "select-input" 的 field-label-pair 内查找（排除日期时间字段）
+                    try:
+                        field = cur.ele(
+                            'css:div[data-testid="uicl-field-label-pair"][class*="select-input"]',
+                            timeout=0.3,
+                        )
+                    except Exception:
+                        field = None
+                    if field:
+                        trigger = field.ele(
+                            'css:button[data-testid="uicl-multi-select-input-button"]',
+                            timeout=0.3,
+                        )
+                        if trigger and not self._is_date_like_trigger(trigger):
+                            logger.debug("Template Term 触发器：通过 iui-form-section > select-input 定位")
+                            return trigger
+                    break
+                cur = cur.parent()
+        except Exception as e:
+            logger.debug(f"策略2定位 Template Term 触发器失败: {e}")
+
+        logger.debug("未能在 Template Term 字段附近找到安全的下拉触发器")
+        return None
+
+    def _get_visible_template_term_dropdown(self, iframe):
+        """获取当前真正可见的 Template Term 下拉层。"""
+        dropdown = None
+        js_find_visible = """
+        return (function() {
+            var selectors = ['div[data-testid="uicl-dropdown"]', 'div.iui-dropdown', 'ul[role="listbox"]'];
+            for (var sel of selectors) {
+                var els = document.querySelectorAll(sel);
+                for (var el of els) {
+                    var rect = el.getBoundingClientRect();
+                    var style = window.getComputedStyle(el);
+                    if (rect.width > 50 && rect.height > 50 && style.display !== 'none') {
+                        el.setAttribute('data-rpa-visible-dropdown', 'true');
+                        return 'found';
+                    }
+                }
+            }
+            return 'not_found';
+        })();
+        """
+        try:
+            result = iframe.run_js(js_find_visible)
+            if result == 'found':
+                dropdown = iframe.ele('css:[data-rpa-visible-dropdown="true"]', timeout=1)
+                if dropdown:
+                    try:
+                        dropdown.run_js('this.removeAttribute("data-rpa-visible-dropdown");')
+                    except Exception:
+                        pass
+        except Exception:
+            dropdown = None
+
+        if dropdown:
+            return dropdown
+
+        try:
+            dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
+        except Exception:
+            dropdowns = []
+
+        for dd in dropdowns or []:
+            try:
+                rect_js = "var r = this.getBoundingClientRect(); var s = window.getComputedStyle(this); return JSON.stringify({w: r.width, h: r.height, d: s.display});"
+                data = json.loads(dd.run_js(rect_js))
+                if data['w'] > 0 and data['h'] > 0 and data['d'] != 'none':
+                    return dd
+            except Exception:
+                continue
+
+        return None
+
+    def _open_template_term_dropdown(self, iframe):
+        """安全打开 Template Term 下拉框，仅允许点击字段自身触发器。"""
+        trigger = self._find_template_term_trigger(iframe)
+        if not trigger:
+            return None
+
+        try:
+            trigger.click(by_js=True)
+        except Exception:
+            try:
+                trigger.click()
+            except Exception as e:
+                logger.debug(f"点击 Template Term 触发器失败: {e}")
+                return None
+
+        time.sleep(0.2)
+        return self._get_visible_template_term_dropdown(iframe)
     
     def _get_template_term_options(self, iframe) -> list[str]:
         """
@@ -2573,71 +2770,10 @@ class ProposalSender:
         """
         options_list = []
         try:
-            opened = False
-            
-            # 尝试通过 Template Term 标签找到下拉按钮
-            term_section = iframe.ele('text:Template Term', timeout=2)
-            if term_section:
-                parent = term_section.parent()
-                for _ in range(5):
-                    if parent:
-                        dropdown_btn = parent.ele(
-                            'css:button[data-testid="uicl-multi-select-input-button"]',
-                            timeout=0.2,
-                        )
-                        if not dropdown_btn:
-                            dropdown_btn = parent.ele(
-                                'css:button.iui-multi-select-input-button, button[aria-haspopup="listbox"], button[role="button"]',
-                                timeout=0.2,
-                            )
-                        if not dropdown_btn:
-                            dropdown_btn = parent.ele(
-                                'css:button, [class*="select"], [class*="dropdown"]',
-                                timeout=0.2,
-                            )
-                        
-                        if dropdown_btn:
-                            dropdown_btn.click(by_js=True)
-                            dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                            if dropdown:
-                                opened = True
-                                break
-                            time.sleep(0.2)
-                        parent = parent.parent()
-            
-            # 兜底：直接找触发器按钮
-            if not opened:
-                try:
-                    dropdown_btn = iframe.ele('css:button[data-testid="uicl-multi-select-input-button"]', timeout=0.5)
-                    if not dropdown_btn:
-                        dropdown_btn = iframe.ele('css:.iui-multi-select-input-button', timeout=0.5)
-                    if dropdown_btn:
-                        dropdown_btn.click(by_js=True)
-                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                        if dropdown:
-                            opened = True
-                except Exception:
-                    pass
-            
-            # 再兜底：点击 please-select
-            if not opened:
-                try:
-                    please_select = iframe.ele('css:span.please-select', timeout=0.5)
-                    if please_select:
-                        please_select.click(by_js=True)
-                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                        if dropdown:
-                            opened = True
-                except Exception:
-                    pass
-            
-            time.sleep(0.3)
-            
-            # 获取下拉框并提取选项
-            dropdown = None
-            dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
-            if dropdowns:
-                dropdown = dropdowns[-1]
+            dropdown = self._open_template_term_dropdown(iframe)
+            if not dropdown:
+                logger.debug("未能安全打开 Template Term 下拉框，返回空选项列表")
+                return []
             
             if dropdown:
                 # 先尝试获取 li[@role="option"] 元素
@@ -2702,113 +2838,8 @@ class ProposalSender:
                     return True
                 except Exception as e:
                     logger.warning(f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}")
-            
-            opened = False
 
-            term_section = iframe.ele('text:Template Term', timeout=2)
-            if term_section:
-                parent = term_section.parent()
-                for _ in range(5):
-                    if parent:
-                        # 优先点中该控件的“下拉触发器”按钮
-                        dropdown_btn = parent.ele(
-                            'css:button[data-testid="uicl-multi-select-input-button"]',
-                            timeout=0.2,
-                        )
-                        if not dropdown_btn:
-                            dropdown_btn = parent.ele(
-                                'css:button.iui-multi-select-input-button, button[aria-haspopup="listbox"], button[role="button"]',
-                                timeout=0.2,
-                            )
-                        if not dropdown_btn:
-                            dropdown_btn = parent.ele(
-                                'css:button, [class*="select"], [class*="dropdown"]',
-                                timeout=0.2,
-                            )
-
-                        if dropdown_btn:
-                            dropdown_btn.click(by_js=True)
-                            # 等待下拉列表弹出
-                            dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                            if dropdown:
-                                opened = True
-                                break
-                            time.sleep(0.2)
-                        parent = parent.parent()
-
-            # 兜底：不依赖“Template Term”文本区域，直接找触发器点击（避免 DOM 结构变化导致 parent 链找不到）
-            if not opened:
-                try:
-                    dropdown_btn = iframe.ele('css:button[data-testid="uicl-multi-select-input-button"]', timeout=0.5)
-                    if not dropdown_btn:
-                        dropdown_btn = iframe.ele('css:.iui-multi-select-input-button', timeout=0.5)
-                    if dropdown_btn:
-                        dropdown_btn.click(by_js=True)
-                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                        if dropdown:
-                            opened = True
-                except Exception:
-                    pass
-
-            # 再兜底：有些实现点击按钮内部的文字也能展开
-            if not opened:
-                try:
-                    please_select = iframe.ele('css:span.please-select', timeout=0.5)
-                    if please_select:
-                        please_select.click(by_js=True)
-                        dropdown = iframe.ele('css:div[data-testid="uicl-dropdown"]', timeout=2)
-                        if dropdown:
-                            opened = True
-                except Exception:
-                    pass
-            
-            time.sleep(0.3)
-
-            # 使用 JS 找到真正可见的下拉框（避免找到隐藏的 Portal 元素）
-            dropdown = None
-            js_find_visible = """
-            return (function() {
-                var selectors = ['div[data-testid="uicl-dropdown"]', 'div.iui-dropdown', 'ul[role="listbox"]'];
-                for (var sel of selectors) {
-                    var els = document.querySelectorAll(sel);
-                    for (var el of els) {
-                        var rect = el.getBoundingClientRect();
-                        var style = window.getComputedStyle(el);
-                        if (rect.width > 50 && rect.height > 50 && style.display !== 'none') {
-                            el.setAttribute('data-rpa-visible-dropdown', 'true');
-                            return 'found';
-                        }
-                    }
-                }
-                return 'not_found';
-            })();
-            """
-            try:
-                result = iframe.run_js(js_find_visible)
-                if result == 'found':
-                    dropdown = iframe.ele('css:[data-rpa-visible-dropdown="true"]', timeout=1)
-                    # 清理标记
-                    if dropdown:
-                        try:
-                            dropdown.run_js('this.removeAttribute("data-rpa-visible-dropdown");')
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            
-            # 备用：遍历所有下拉框找可见的
-            if not dropdown:
-                dropdowns = iframe.eles('css:div[data-testid="uicl-dropdown"]')
-                for dd in dropdowns or []:
-                    try:
-                        rect_js = "var r = this.getBoundingClientRect(); var s = window.getComputedStyle(this); return JSON.stringify({w: r.width, h: r.height, d: s.display});"
-                        import json
-                        data = json.loads(dd.run_js(rect_js))
-                        if data['w'] > 0 and data['h'] > 0 and data['d'] != 'none':
-                            dropdown = dd
-                            break
-                    except Exception:
-                        pass
+            dropdown = self._open_template_term_dropdown(iframe)
 
             if dropdown:
                 options = []
