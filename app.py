@@ -4,6 +4,8 @@ from rich.panel import Panel
 
 from core.config_manager import ConfigManager
 from core.config_store import ConfigStore
+from core.identity_service import get_machine_uid
+from core.remote_sync_service import RemoteSyncService
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender, SendProposalsResult
@@ -17,8 +19,25 @@ class ImpactRPA:
     def __init__(self):
         self.console = Console()
         self.config = ConfigManager()
+
+        # 初始化远程同步服务
+        self.uid = get_machine_uid()
+        initial_settings = self.config.load_settings()
+        sync_url = initial_settings.get("sync_url", "")
+        self.sync_service = RemoteSyncService(sync_url, self.uid) if sync_url else None
+
+        # 启动时拉取配置（在 ConfigStore 启动监听之前）
+        if self.sync_service:
+            self.sync_service.pull_and_apply(self.config)
+
         self.config_store = ConfigStore(self.config)
         self.config.store = self.config_store
+
+        # 订阅远程同步观察者
+        if self.sync_service:
+            self.config_store.subscribe("settings", self.sync_service.on_config_changed)
+            self.config_store.subscribe("templates", self.sync_service.on_config_changed)
+
         self.config_store.start_watching(interval_s=0.8)
         self.settings = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
