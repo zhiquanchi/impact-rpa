@@ -11,7 +11,6 @@ import json
 from typing import Any
 
 from loguru import logger
-from DrissionPage import Chromium
 from pydantic import BaseModel, ConfigDict, Field
 
 # ========== Pydantic 模型定义 ==========
@@ -147,7 +146,11 @@ def extract_publisher_group_names_from_response(response_data: dict) -> list[str
         return []
 
 
-tab = Chromium().latest_tab
+#
+# 说明：本文件允许被 `app.py` 集成调用。
+# 为了避免重复连接浏览器，这里不在模块导入时创建 `Chromium()` 实例，
+# 而是由外部传入已初始化的 `BrowserManager`（复用 `legacy_main.py:235`）。
+#
 
 def extract_tags_from_discovery_page(page):
     """使用监听的方式捕获 Discovery tablestructure，并只提取顶层 filterValues(dict)。"""
@@ -442,44 +445,38 @@ def __tags_need_to_create(tags: dict[str, Any] | list[Any] | None, group_names: 
 
     return [c for c in candidates if not exists_in_groups(c)]
 
-def main():
-    logger.info("连接本机已打开的浏览器（DrissionPage Chromium 附加模式）…")
-    logger.info("脚本结束后不会关闭浏览器，便于继续调试。")
+def seed_partner_groups_from_discovery(browser_manager) -> bool:
+    """
+    从 Discovery 的 businessModels 抓取 tags，并在 Partner Groups 页面创建缺失的 Groups。
 
-    # 仅附加到已有浏览器实例，切勿在此调用 browser.quit()
-    browser = Chromium()
-
-    # 测试获取 Partner Group 列表
-    group_names = get_partner_group_names_from_myMediaPartnerGroupsJSON(browser.latest_tab)
-    logger.info(f"获取到的 Partner Group 列表: {group_names}")
-    # 测试获取已经创建好的 group name 列表
-    business_models = extract_filtertype_values_list_from_discovery_page(
-        browser.latest_tab, parameter_name="businessModels"
-    )
-    logger.info(f"获取到的 Discovery businessModels filterValues: {business_models}")
-
-    raise SystemExit
-
+    约束：
+    - 只依赖外部传入的 BrowserManager（复用它的 Chromium 会话）
+    - 已存在 Group 的校验/读取：只走 myMediaPartnerGroupsJSON，不回退 UI/DOM 解析
+    """
     try:
+        browser = getattr(browser_manager, "browser", None)
+        if browser is None:
+            logger.error("seed_partner_groups_from_discovery: browser_manager.browser 为空")
+            return False
+
         # 0. 寻找 Discovery 标签页
         logger.info("正在寻找 Discovery 标签页...")
         discovery_tab = browser.get_tab(url="partner_discover.ihtml")
         if not discovery_tab:
             logger.error("未找到 Discovery 标签页，请确保浏览器已打开该页面。")
-            return
+            return False
 
-        # 1. 提取标签
+        # 1. 提取 tags
         tags = extract_filtertype_values_list_from_discovery_page(
             discovery_tab, parameter_name="businessModels"
         )
         if not tags:
-            logger.warning("未提取到任何有效标签，脚本退出。")
-            return
-        
-        # 2. 寻找或打开 Groups 标签页（优先复用已有标签，避免每次新开）
+            logger.warning("未提取到任何有效标签，退出。")
+            return False
+
+        # 2. 寻找或打开 Groups 标签页（优先复用已有标签）
         logger.info("正在寻找或打开 Groups 标签页...")
         groups_url = "https://app.impact.com/secure/advertiser/engage/mediapartners/view-mediapartnergroups-flow.ihtml"
-        # DrissionPage：get_tab 在找不到时会抛 RuntimeError，需用 get_tabs 再判断是否为空
         existing_groups = browser.get_tabs(url="view-mediapartnergroups-flow.ihtml")
         if existing_groups:
             groups_tab = existing_groups[0]
@@ -488,44 +485,69 @@ def main():
             logger.info("未找到 Groups 标签页，新开一个。")
             groups_tab = browser.new_tab(url=groups_url)
 
-        # 复用标签时若未激活，DrissionPage 的 doc_loaded / 查节点易长时间卡住
+        # 复用标签时若未激活，容易出现等待卡住
         try:
             browser.activate_tab(groups_tab)
         except Exception as e:
             logger.debug("activate_tab: {}", e)
 
-        # 2. 获取已创建的 Partner Group 列表
-        # 优先直接走 JSON 接口，避免表格 DOM/等待问题
-        logger.info("正在通过 myMediaPartnerGroupsJSON 读取 Partner Groups 列表…")
-        try:
-            group_names = get_partner_group_names_from_myMediaPartnerGroupsJSON(groups_tab)
-        except Exception as e:
-            logger.warning("接口读取失败（将回退 UI/JS 方案）: {}", e)
-            group_names = get_partner_group_names_from_groups_page(groups_tab)
+        # 3. 读取当前已存在的 Partner Groups：只走 myMediaPartnerGroupsJSON
+        logger.info("正在通过 myMediaPartnerGroupsJSON 读取 Partner Groups 列表...")
+        group_names = get_partner_group_names_from_myMediaPartnerGroupsJSON(groups_tab) or []
         if not group_names:
-            logger.warning("监听接口未解析到任何 Group Name，回退 UI/JS 方案…")
-            group_names = get_partner_group_names_from_groups_page(groups_tab)
-        # 是否需要创建标签
+            logger.warning("myMediaPartnerGroupsJSON 返回空的 Group Names")
+            return False
+
+        # 4. 计算缺失的 groups
         need_to_create_tags = __tags_need_to_create(tags, group_names)
         if len(need_to_create_tags) == 0:
-            logger.info("所有标签已存在，脚本退出。")
-            return
+            logger.info("所有标签已存在，无需创建。")
+            return True
+
         logger.info("需要创建的标签: {}", need_to_create_tags)
 
+        # 5. 创建缺失 groups（UI 点击方式）
         success_count = 0
         for tag in need_to_create_tags:
             if create_group_ui(groups_tab, tag):
                 success_count += 1
             time.sleep(0.5)
 
-        logger.info("任务完成！成功创建 {}/{} 个 Group。", success_count, len(need_to_create_tags))
+        # 6. 创建后再次读取并验证缺失列表为空
+        logger.info("创建完成，开始复验缺失情况（再次读取 myMediaPartnerGroupsJSON）...")
+        group_names_after = get_partner_group_names_from_myMediaPartnerGroupsJSON(groups_tab) or []
+        missing_after = __tags_need_to_create(tags, group_names_after)
+        if len(missing_after) == 0:
+            logger.info("复验通过：缺失列表为空。成功创建 {}/{} 个 Group。", success_count, len(need_to_create_tags))
+            return True
+
+        logger.warning("复验未通过：仍缺失 {} 个 Group：{}", len(missing_after), missing_after)
+        return False
 
     except Exception as e:
-        logger.exception("脚本运行出错: {}", e)
-    finally:
-        # 故意不 quit：保持调试浏览器与所有标签页打开
-        logger.info("已断开 DrissionPage 会话，浏览器窗口保持打开。")
+        logger.exception("seed_partner_groups_from_discovery 出错: {}", e)
+        return False
+
+
+def main() -> int:
+    """
+    允许脚本独立运行：初始化 BrowserManager 并执行一次种子逻辑。
+    """
+    from rich.console import Console
+    # 使用 legacy_main 暴露出来的同一类型，避免静态类型检查认为两处 ConfigManager 不同
+    from legacy_main import BrowserManager, ConfigManager
+
+    console = Console()
+    config = ConfigManager()
+    browser_manager = BrowserManager(console=console, config=config)
+
+    if not browser_manager.init():
+        logger.error("BrowserManager 初始化失败：无法连接浏览器")
+        return 1
+
+    ok = seed_partner_groups_from_discovery(browser_manager)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

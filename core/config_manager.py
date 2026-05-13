@@ -26,6 +26,8 @@ class ConfigManager:
             "input_partner_groups_tag": True,
             # 是否输出 Partner Groups 下拉解析与点击的详细调试日志
             "partner_groups_debug_logging": False,
+            # Partner Groups 批量创建一次性补全标记（理论上每台配置只需跑一次）
+            "partner_groups_batch_create_done": False,
             "partner_groups": {
                 "mode": "ui",
                 "api": {

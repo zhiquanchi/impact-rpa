@@ -67,12 +67,39 @@ class ImpactRPA:
                 except Exception:
                     pass
                 return
+            self._maybe_seed_partner_groups_once()
             self._main_loop()
         finally:
             try:
                 self.config_store.stop_watching()
             except Exception:
                 pass
+
+    def _maybe_seed_partner_groups_once(self) -> None:
+        """
+        Partner Groups 首次初始化（一次性补全）。
+        - 只在配置标记未完成时执行一次
+        - 成功才写回 `partner_groups_batch_create_done=True`
+        """
+        try:
+            settings = self.settings.get_snapshot()
+            if settings.get("partner_groups_batch_create_done"):
+                self.console.print("[dim]Partner Groups 一次性补全：已完成，跳过[/dim]")
+                return
+
+            from scripts.batch_create_partner_groups import seed_partner_groups_from_discovery
+
+            ok = seed_partner_groups_from_discovery(self.browser)
+            if ok:
+                settings["partner_groups_batch_create_done"] = True
+                if self.settings.save(settings):
+                    self.console.print("[bold green]✓ Partner Groups 一次性补全完成[/bold green]")
+                else:
+                    self.console.print("[yellow]警告：补全成功，但写回配置失败（下次仍会尝试）[/yellow]")
+            else:
+                self.console.print("[yellow]Partner Groups 一次性补全未完成（下次启动继续尝试）[/yellow]")
+        except Exception as e:
+            self.console.print(f"[yellow]Partner Groups 一次性补全触发失败：{e}[/yellow]")
 
     def _main_loop(self):
         while True:
