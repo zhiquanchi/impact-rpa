@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# mitmproxy CA / private material (if using project-local confdir)
+config/mitmproxy/
+
 # Configuration files (user-specific)
 config/settings.json
 config/template.txt

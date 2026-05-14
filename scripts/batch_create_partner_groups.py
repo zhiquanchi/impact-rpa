@@ -13,6 +13,9 @@ from typing import Any
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
+# Discovery businessModels 中的导航/聚合项，不作为 Partner Group 同步创建
+SKIP_BUSINESS_MODEL_GROUP_LABELS: frozenset[str] = frozenset({"Home", "All Partners"})
+
 # ========== Pydantic 模型定义 ==========
 
 # --- myMediaPartnerGroupsJSON.ihtml ---
@@ -397,7 +400,7 @@ def get_partner_group_names_from_groups_page(groups_page):
         return []
 
 
-def __tags_need_to_create(tags: dict[str, Any] | list[Any] | None, group_names: list[str]) -> list[str]:
+def _tags_need_to_create(tags: dict[str, Any] | list[Any] | None, group_names: list[str]) -> list[str]:
     """根据 Discovery 返回的筛选项生成候选 tag，并与已有 `group_names` 做包含匹配去重。"""
     if not tags:
         return []
@@ -417,6 +420,8 @@ def __tags_need_to_create(tags: dict[str, Any] | list[Any] | None, group_names: 
             return
         cand_s = str(cand).strip()
         if not cand_s or cand_s in seen:
+            return
+        if cand_s in SKIP_BUSINESS_MODEL_GROUP_LABELS:
             return
         seen.add(cand_s)
         candidates.append(cand_s)
@@ -459,12 +464,19 @@ def seed_partner_groups_from_discovery(browser_manager) -> bool:
             logger.error("seed_partner_groups_from_discovery: browser_manager.browser 为空")
             return False
 
-        # 0. 寻找 Discovery 标签页
+        # 0. 寻找或打开 Discovery 标签页（get_tab 无匹配会抛 RuntimeError，故用 get_tabs）
         logger.info("正在寻找 Discovery 标签页...")
-        discovery_tab = browser.get_tab(url="partner_discover.ihtml")
-        if not discovery_tab:
-            logger.error("未找到 Discovery 标签页，请确保浏览器已打开该页面。")
-            return False
+        discovery_tabs = browser.get_tabs(url="partner_discover.ihtml")
+        if discovery_tabs:
+            discovery_tab = discovery_tabs[0]
+            logger.info("复用已打开的 Discovery 标签页。")
+        else:
+            logger.info("未找到 Discovery 标签页，新开一个。")
+            _discovery_url = (
+                "https://app.impact.com/secure/advertiser/discover/radius/fr/"
+                "partner_discover.ihtml?page=marketplace&slideout_id_type=partner"
+            )
+            discovery_tab = browser.new_tab(url=_discovery_url)
 
         # 1. 提取 tags
         tags = extract_filtertype_values_list_from_discovery_page(
@@ -499,7 +511,7 @@ def seed_partner_groups_from_discovery(browser_manager) -> bool:
             return False
 
         # 4. 计算缺失的 groups
-        need_to_create_tags = __tags_need_to_create(tags, group_names)
+        need_to_create_tags = _tags_need_to_create(tags, group_names)
         if len(need_to_create_tags) == 0:
             logger.info("所有标签已存在，无需创建。")
             return True
@@ -516,7 +528,7 @@ def seed_partner_groups_from_discovery(browser_manager) -> bool:
         # 6. 创建后再次读取并验证缺失列表为空
         logger.info("创建完成，开始复验缺失情况（再次读取 myMediaPartnerGroupsJSON）...")
         group_names_after = get_partner_group_names_from_myMediaPartnerGroupsJSON(groups_tab) or []
-        missing_after = __tags_need_to_create(tags, group_names_after)
+        missing_after = _tags_need_to_create(tags, group_names_after)
         if len(missing_after) == 0:
             logger.info("复验通过：缺失列表为空。成功创建 {}/{} 个 Group。", success_count, len(need_to_create_tags))
             return True

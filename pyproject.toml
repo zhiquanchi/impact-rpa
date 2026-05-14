@@ -3,10 +3,11 @@ name = "impact-rpa"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "drissionpage>=4.1.1.2",
     "loguru>=0.7.3",
+    "mitmproxy>=12.2.3",
     "plyer>=2.1.0",
     "pydantic>=2.7.0",
     "pyperclip>=1.11.0",
