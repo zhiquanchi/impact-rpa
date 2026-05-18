@@ -1,6 +1,7 @@
+# 请勿删除，这是会迁移到核心层。
 from DrissionPage import Chromium
 from pydantic import BaseModel, ConfigDict
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import json
 import time
 
@@ -156,7 +157,7 @@ def fetch_partner_data(count=5):
                                             "mozDomainAuthority": prop.website.mozDomainAuthority
                                         }
                                 api1_captured = True
-                                print(f"  [√] Captured Base API (Moz Data)")
+                                print("  [√] Captured Base API (Moz Data)")
 
                     # API 2: 深度流量属性 (包含 Semrush 和 Visitors 数据)
                     elif 'api/slideout/mediaproperties' in url_lower:
@@ -177,9 +178,9 @@ def fetch_partner_data(count=5):
                                         "Monthly visitors": summary.Visits
                                     }
                             api2_captured = True
-                            print(f"  [√] Captured Traffic API (Semrush/Visitors)")
+                            print("  [√] Captured Traffic API (Semrush/Visitors)")
 
-                except Exception as e:
+                except Exception:
                     # 忽略解析错误，继续处理下一个包
                     pass
 
