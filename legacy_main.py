@@ -46,20 +46,6 @@ class ConfigManager:
             "screenshot_on_error": True,
             # 是否整页截图（True=整页，False=仅可视区域；整页对浏览器内核版本有要求且更慢）
             "screenshot_full_page": False,
-            # 视觉 RPA 配置（兼容 OpenAI SDK 格式的 VL LLM）
-            "vision_rpa": {
-                "enabled": False,  # 是否启用视觉 RPA
-                "api_key": "",  # API Key，也可通过环境变量 VL_API_KEY 设置
-                "base_url": "",  # API 地址，也可通过环境变量 VL_BASE_URL 设置
-                "model": "gpt-4o",  # 模型名称
-                "max_tokens": 1024,
-                "temperature": 0.1,
-                "timeout": 30,
-                # 浏览器 UI 偏移（标签栏+地址栏高度，单位：像素）
-                # Chrome/Edge 通常约为 100-150px，可根据实际情况调整
-                "browser_ui_offset_x": 0,  # 内容区域左侧偏移
-                "browser_ui_offset_y": 0,  # 内容区域顶部偏移（约 100-150px）
-            },
         }
         
         # 确保目录存在
@@ -852,14 +838,9 @@ class DatePicker:
 
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
-        self._vision_handler = None
 
-    def set_vision_handler(self, handler):
-        """设置视觉 RPA 处理器（为了向后兼容保留）"""
-        self._vision_handler = handler
-
-    def select_date(self, context, target_date: datetime, strategies: list | None = None, open_picker: bool = True) -> DatePickerResult:
-        """选择指定日期（仅使用元素点击策略） - 保持向后兼容"""
+    def select_date(self, context, target_date: datetime, open_picker: bool = True) -> DatePickerResult:
+        """选择指定日期（仅使用元素点击策略）"""
         target_day = str(target_date.day)
         target_iso = target_date.strftime('%Y-%m-%d')
 
@@ -1053,9 +1034,6 @@ class ProposalSender:
         # 初始化日期选择器
         self.date_picker = DatePicker(console)
 
-        # 配置视觉 RPA 处理器（如果启用）
-        self._setup_vision_rpa(settings)
-
         # 订阅配置热更新（如果启用）
         try:
             store = getattr(self.config, "store", None)
@@ -1233,7 +1211,6 @@ class ProposalSender:
         """配置变更时刷新运行期字段（无需重启进程）。"""
         try:
             self._apply_settings(settings or {})
-            self._setup_vision_rpa(settings or {})
         except Exception:
             pass
 
@@ -1245,41 +1222,6 @@ class ProposalSender:
                 self.refresh_from_settings(store.get_settings())
         except Exception:
             pass
-    
-    def _setup_vision_rpa(self, settings: dict):
-        """配置视觉 RPA 处理器"""
-        vision_config = settings.get("vision_rpa", {})
-        if not vision_config.get("enabled"):
-            logger.debug("视觉 RPA 未启用")
-            return
-        
-        try:
-            from vision_rpa import VisionConfig, VisionDatePickerHandler
-            
-            # 优先使用配置文件中的设置，其次使用环境变量
-            config = VisionConfig(
-                api_key=vision_config.get("api_key") or os.getenv("VL_API_KEY") or os.getenv("OPENAI_API_KEY") or "",
-                base_url=vision_config.get("base_url") or os.getenv("VL_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "",
-                model=vision_config.get("model", "gpt-4o"),
-                max_tokens=vision_config.get("max_tokens", 1024),
-                temperature=vision_config.get("temperature", 0.1),
-                timeout=vision_config.get("timeout", 30),
-                browser_ui_offset_x=vision_config.get("browser_ui_offset_x", 0),
-                browser_ui_offset_y=vision_config.get("browser_ui_offset_y", 0),
-            )
-            
-            if not config.api_key:
-                logger.warning("视觉 RPA 已启用但未配置 API Key")
-                return
-            
-            handler = VisionDatePickerHandler(config=config)
-            self.date_picker.set_vision_handler(handler)
-            logger.info(f"视觉 RPA 已启用，模型: {config.model}")
-            
-        except ImportError as e:
-            logger.warning(f"视觉 RPA 依赖未安装: {e}")
-        except Exception as e:
-            logger.error(f"配置视觉 RPA 失败: {e}")
 
     def _find_send_proposal_buttons(self) -> list:
         """
@@ -3338,14 +3280,13 @@ class ProposalSender:
             logger.info(f"当前日期已缓存: {self._cached_today.isoformat()}")
         return self._cached_today
 
-    def _select_tomorrow_date(self, iframe, strategies: list | None = None) -> bool:
+    def _select_tomorrow_date(self, iframe) -> bool:
         """
         选择明天的日期
-        
+
         Args:
             iframe: iframe 对象
-            strategies: 使用的策略列表，默认 ['element_click', 'vision_rpa']
-            
+
         Returns:
             bool: 是否成功
         """
@@ -3353,14 +3294,9 @@ class ProposalSender:
             today = self._get_today()
             tomorrow = today + timedelta(days=1)
             target_date = datetime.combine(tomorrow, datetime.min.time())
-            if strategies is None:
-                # 主流程只使用真实点击（element_click）。
-                # 当今天是月末时，明天会自动变成下个月 1 号，由 element_click 负责跨月导航并点击。
-                strategies = ['element_click']
             result = self.date_picker.select_date(
                 context=iframe,
                 target_date=target_date,
-                strategies=strategies,
                 open_picker=True,
             )
             
