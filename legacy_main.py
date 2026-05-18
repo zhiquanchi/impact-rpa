@@ -15,6 +15,7 @@ import pyperclip
 from difflib import SequenceMatcher
 from exception_handler import exception_handler
 import inspect
+from loguru._logger import Logger  # 核心类型
 
 
 class ConfigManager:
@@ -235,10 +236,10 @@ class TemplateManager:
 class BrowserManager:
     """浏览器管理类，负责浏览器连接和元素操作"""
     
-    def __init__(self, console: Console, config: ConfigManager | None = None):
+    def __init__(self, log: Logger, config: ConfigManager | None = None):
         self.browser = None
         self.tab = None
-        self.console = console
+        self.logger = log
         self.max_retries = 3
         self.config = config
 
@@ -306,26 +307,26 @@ class BrowserManager:
                 logger.debug(f"通过选项连接失败: {e3}")
             
             # 如果所有方式都失败
-            logger.error("所有浏览器连接方式均失败")
-            self.console.print("[yellow]提示：请确保浏览器已打开，并允许 DrissionPage 连接[/yellow]")
-            self.console.print("[yellow]或者手动启动浏览器后重试[/yellow]")
-            self.console.print("[dim]常见解决方案：[/dim]")
-            self.console.print("[dim]1. 确保 Chrome/Edge 浏览器已打开[/dim]")
-            self.console.print("[dim]2. 检查是否有防火墙/安全软件阻止连接[/dim]")
-            self.console.print("[dim]3. 尝试以管理员权限运行[/dim]")
-            self.console.print("[dim]4. 如果使用 Chrome，尝试关闭所有 Chrome 窗口后重新打开[/dim]")
+            self.logger.error("所有浏览器连接方式均失败")
+            self.logger.error("[yellow]提示：请确保浏览器已打开，并允许 DrissionPage 连接[/yellow]")
+            self.logger.error("[yellow]或者手动启动浏览器后重试[/yellow]")
+            self.logger.error("[dim]常见解决方案：[/dim]")
+            self.logger.error("[dim]1. 确保 Chrome/Edge 浏览器已打开[/dim]")
+            self.logger.error("[dim]2. 检查是否有防火墙/安全软件阻止连接[/dim]")
+            self.logger.error("[dim]3. 尝试以管理员权限运行[/dim]")
+            self.logger.error("[dim]4. 如果使用 Chrome，尝试关闭所有 Chrome 窗口后重新打开[/dim]")
             return False
             
         except Exception as e:
-            logger.error(f"浏览器连接失败: {e}")
+            self.logger.error(f"浏览器连接失败: {e}")
             import traceback
-            logger.debug(traceback.format_exc())
+            self.logger.debug(traceback.format_exc())
             return False
     
     def reconnect(self) -> bool:
         """重新连接浏览器"""
-        self.console.print("[yellow]检测到页面断开，正在重新连接...[/yellow]")
-        logger.warning("页面断开，尝试重新连接浏览器")
+        self.logger.warning("检测到页面断开，正在重新连接...")
+        self.logger.warning("页面断开，尝试重新连接浏览器")
         
         for i in range(self.max_retries):
             try:
@@ -335,14 +336,14 @@ class BrowserManager:
                 except Exception:
                     impact_tab = None
                 self.tab = impact_tab or self.browser.latest_tab
-                self.console.print("[green]✓ 浏览器重新连接成功[/green]")
+                self.logger.info("浏览器重新连接成功")
                 logger.info("浏览器重新连接成功")
                 return True
             except Exception as e:
-                logger.error(f"重连尝试 {i+1}/{self.max_retries} 失败: {e}")
+                self.logger.error(f"重连尝试 {i+1}/{self.max_retries} 失败: {e}")
                 time.sleep(1)
         
-        self.console.print("[red]✗ 浏览器重新连接失败[/red]")
+        self.logger.error("✗ 浏览器重新连接失败")
         return False
     
     def is_connected(self) -> bool:
@@ -384,33 +385,7 @@ class BrowserManager:
             pass
         return ctx
 
-    def _ele_brief(self, ele) -> dict | None:
-        """提取元素的关键信息，避免日志过大。"""
-        if not ele:
-            return None
-        info = {}
-        try:
-            info["tag"] = getattr(ele, "tag", None)
-        except Exception:
-            pass
 
-        def _attr(name: str):
-            try:
-                return ele.attr(name)
-            except Exception:
-                return None
-
-        for k in ("id", "class", "data-testid", "data-pa-testid", "role", "name"):
-            v = _attr(k)
-            if v:
-                info[k] = v
-        try:
-            t = (ele.text or "").strip()
-            if t:
-                info["text"] = t[:200]
-        except Exception:
-            pass
-        return info or None
 
     def _caller_brief(self) -> dict | None:
         """返回调用 BrowserManager 方法的业务函数位置，便于快速定位。"""
@@ -424,44 +399,6 @@ class BrowserManager:
             return None
         return None
 
-    def _capture_screenshot(self, reason: str, element=None) -> dict | None:
-        """按 DrissionPage 文档调用 get_screenshot() 保存截图，并返回路径信息。"""
-        if not self.screenshot_on_error:
-            return None
-        if not self.tab:
-            return None
-        now = time.time()
-        if now - self._last_screenshot_ts < self._screenshot_min_interval:
-            return None
-        self._last_screenshot_ts = now
-
-        def _safe_name(s: str) -> str:
-            s = (s or 'error').strip()
-            s = re.sub(r'[^a-zA-Z0-9\-_.]+', '_', s)
-            return s[:80] if len(s) > 80 else s
-
-        stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        tag = _safe_name(reason)
-        info = {"reason": reason}
-        try:
-            page_name = f"page_{stamp}_{tag}.jpg"
-            page_path = self.tab.get_screenshot(
-                path=self.screenshot_dir,
-                name=page_name,
-                full_page=self.screenshot_full_page,
-            )
-            info["page"] = page_path
-        except Exception as e:
-            info["page_error"] = str(e)
-
-        if element:
-            try:
-                ele_name = f"ele_{stamp}_{tag}.jpg"
-                ele_path = element.get_screenshot(path=self.screenshot_dir, name=ele_name)
-                info["element"] = ele_path
-            except Exception as e:
-                info["element_error"] = str(e)
-        return info
     
     def find_element(self, locator: str, timeout: float = 3.0, parent=None):
         """安全地查找元素"""
@@ -471,7 +408,7 @@ class BrowserManager:
             return element
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
-            shot = self._capture_screenshot(f"find_element_{locator}")
+            # shot = self._capture_screenshot(f"find_element_{locator}")
             exception_handler.log_exception(
                 e,
                 context={
@@ -479,9 +416,9 @@ class BrowserManager:
                     "locator": locator,
                     "timeout": timeout
                     ,"page": self._get_page_context()
-                    ,"parent": self._ele_brief(parent)
+                    # ,"parent": self._ele_brief(parent)
                     ,"caller": self._caller_brief()
-                    ,"screenshot": shot
+                    # ,"screenshot": shot
                 }
             )
             return None
@@ -489,7 +426,7 @@ class BrowserManager:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
-                shot = self._capture_screenshot(f"find_element_disconnect_{locator}")
+                # shot = self._capture_screenshot(f"find_element_disconnect_{locator}")
                 exception_handler.log_exception(
                     e,
                     context={
@@ -498,9 +435,9 @@ class BrowserManager:
                         "timeout": timeout,
                         "error_type": "页面断开"
                         ,"page": self._get_page_context()
-                        ,"parent": self._ele_brief(parent)
+                        # ,"parent": self._ele_brief(parent)
                         ,"caller": self._caller_brief()
-                        ,"screenshot": shot
+                        # ,"screenshot": shot
                     }
                 )
                 return None
@@ -514,7 +451,7 @@ class BrowserManager:
             return elements if elements else []
         except (ElementNotFoundError, PageDisconnectedError, ContextLostError) as e:
             logger.warning(f"查找元素失败: {e}")
-            shot = self._capture_screenshot(f"find_elements_{locator}")
+            # shot = self._capture_screenshot(f"find_elements_{locator}")
             exception_handler.log_exception(
                 e,
                 context={
@@ -522,9 +459,9 @@ class BrowserManager:
                     "locator": locator,
                     "timeout": timeout
                     ,"page": self._get_page_context()
-                    ,"parent": self._ele_brief(parent)
+                    # ,"parent": self._ele_brief(parent)
                     ,"caller": self._caller_brief()
-                    ,"screenshot": shot
+                    # ,"screenshot": shot
                 }
             )
             return []
@@ -532,7 +469,7 @@ class BrowserManager:
             error_msg = str(e).lower()
             if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
                 logger.warning(f"页面可能已断开: {e}")
-                shot = self._capture_screenshot(f"find_elements_disconnect_{locator}")
+                # shot = self._capture_screenshot(f"find_elements_disconnect_{locator}")
                 exception_handler.log_exception(
                     e,
                     context={
@@ -541,9 +478,9 @@ class BrowserManager:
                         "timeout": timeout,
                         "error_type": "页面断开"
                         ,"page": self._get_page_context()
-                        ,"parent": self._ele_brief(parent)
+                        # ,"parent": self._ele_brief(parent)
                         ,"caller": self._caller_brief()
-                        ,"screenshot": shot
+                        # ,"screenshot": shot
                     }
                 )
                 return []
@@ -569,16 +506,16 @@ class BrowserManager:
                     pass
             
             logger.warning(f"点击元素失败: {e}")
-            shot = self._capture_screenshot("click", element=element)
+            # shot = self._capture_screenshot("click", element=element)
             exception_handler.log_exception(
                 e,
                 context={
                     "operation": "点击元素",
                     "by_js": by_js,
                     "page": self._get_page_context(),
-                    "element": self._ele_brief(element),
+                    # "element": self._ele_brief(element),
                     "caller": self._caller_brief(),
-                    "screenshot": shot,
+                    # "screenshot": shot,
                 },
             )
             return False
@@ -892,232 +829,118 @@ class BrowserManager:
             logger.warning(f"获取滚动容器信息失败: {e}")
             return {}
     
-    def navigate(self, url: str) -> bool:
-        """导航到指定URL"""
-        try:
-            self.tab.get(url)
-            return self.wait_for_page_ready()
-        except Exception as e:
-            logger.error(f"导航失败: {e}")
-            return False
 
 
 class DatePickerResult:
     """日期选择结果"""
-    
     def __init__(self, success: bool, method: str | None = None, error: str | None = None):
         self.success = success
-        self.method = method  # 'element_click' | 'vision_rpa'
+        self.method = method
         self.error = error
 
 
 class DatePicker:
-    """
-    日期选择器类，支持多种选择策略：
-    1. 元素点击方式 (element_click)
-    2. 视觉 RPA 方式 (vision_rpa) - 需要外部实现
-    """
-    # 日期触发器/输入框选择器（用于“打开日期选择器”）
-    # 注意：这里不做 JS 写值，仅用于点击打开弹层
-    DATE_INPUT_SELECTORS = [
-        'css:button[data-testid="uicl-date-input"]',
-    ]
-    
-    # 禁用状态的类名关键词（尽量通用；站点/组件不同会有差异）
-    DISABLED_KEYWORDS = (
-        # 通用
-        'disabled', 'today', 'current',
-        # 通用
-        'inactive', 'outside', 'other', 'old', 'muted',
-        'adjacent', 'faded', 'dim', 'grey', 'gray', 'secondary',
-        'prev-month', 'next-month', 'other-month', 'not-current',
-        'outsidemonth', 'notcurrent', 'grayed', 'unavailable',
-    )
-    
-    # 月份切换按钮选择器
-    PREV_MONTH_SELECTORS = [
-        'css:button[data-testid="uicl-calendar-previous-month"]',
-        'css:button[aria-label="Previous Month"]',
-        'css:button[aria-label^="Previous"]',
-    ]
-    
-    NEXT_MONTH_SELECTORS = [
-        'css:button[data-testid="uicl-calendar-next-month"]',
-        'css:button[aria-label="Next Month"]',
-        'css:button[aria-label^="Next"]',
-    ]
-    
-    # 日期单元格选择器
-    DATE_CELL_SELECTORS = [
-        'css:td, .day, [class*="day"], [class*="date"]',
-    ]
-    
+    """日期选择器 - 精简版，仅保留 Impact 平台核心功能"""
+    # 仅保留最精确的 data-testid 选择器
+    DATE_INPUT_SELECTORS = ['css:button[data-testid="uicl-date-input"]']
+    PREV_MONTH_SELECTORS = ['css:button[data-testid="uicl-calendar-previous-month"]']
+    NEXT_MONTH_SELECTORS = ['css:button[data-testid="uicl-calendar-next-month"]']
+    DATE_CELL_SELECTORS = ['css:td']
+
+    # 仅保留实际使用的禁用关键词
+    DISABLED_KEYWORDS = ('disabled', 'prev-month', 'next-month', 'other-month', 'unavailable')
+
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
-        self._vision_handler = None  # 视觉 RPA 处理器，由外部注入
-    
+        self._vision_handler = None
+
     def set_vision_handler(self, handler):
-        """
-        设置视觉 RPA 处理器
-        
-        handler 应该是一个可调用对象，签名为:
-        handler(context, target_date: datetime, screenshot_path: str = None) -> bool
-        """
+        """设置视觉 RPA 处理器（为了向后兼容保留）"""
         self._vision_handler = handler
-    
-    def select_date(
-        self,
-        context,  # iframe 或 page 对象
-        target_date: datetime,
-        strategies: list | None = None,
-        open_picker: bool = True,
-    ) -> DatePickerResult:
-        """
-        选择指定日期
-        
-        Args:
-            context: iframe 或 page 对象
-            target_date: 目标日期
-            strategies: 使用的策略列表，默认 ['element_click', 'vision_rpa']
-            open_picker: 是否先打开日期选择器
-            
-        Returns:
-            DatePickerResult: 选择结果
-        """
-        if strategies is None:
-            # Impact：只使用真实点击（element_click）；必要时可启用 vision_rpa 兜底
-            strategies = ['element_click']
-        
+
+    def select_date(self, context, target_date: datetime, strategies: list | None = None, open_picker: bool = True) -> DatePickerResult:
+        """选择指定日期（仅使用元素点击策略） - 保持向后兼容"""
         target_day = str(target_date.day)
         target_iso = target_date.strftime('%Y-%m-%d')
-        
-        last_error = None
-        
-        for strategy in strategies:
-            try:
-                if strategy == 'element_click':
-                    success = self._select_by_element_click(
-                        context=context,
-                        target_date=target_date,
-                        target_day=target_day,
-                        target_iso=target_iso,
-                        open_picker=open_picker,
-                    )
-                    if success:
-                        return DatePickerResult(success=True, method='element_click')
-                
-                elif strategy == 'vision_rpa':
-                    success = self._select_by_vision_rpa(context, target_date)
-                    if success:
-                        return DatePickerResult(success=True, method='vision_rpa')
-                
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"日期选择策略 {strategy} 失败: {e}")
-                continue
-        
-        return DatePickerResult(
-            success=False,
-            error=last_error or f"所有策略均失败，无法选择日期: {target_iso}"
-        )
-    
-    def _select_by_element_click(
-        self,
-        context,
-        target_date: datetime,
-        target_day: str,
-        target_iso: str,
-        open_picker: bool = True,
-    ) -> bool:
-        """通过元素点击方式选择日期"""
-        # 打开日期选择器
-        if open_picker:
-            if not self._open_date_picker(context):
-                return False
 
-        # 计算月份差异（必须在快速路径之前，用于判断是否需要跨月导航）
+        try:
+            success = self._select_by_element_click(
+                context=context,
+                target_date=target_date,
+                target_day=target_day,
+                target_iso=target_iso,
+                open_picker=open_picker,
+            )
+            if success:
+                return DatePickerResult(success=True, method='element_click')
+        except Exception as e:
+            logger.warning(f"日期选择失败: {e}")
+            return DatePickerResult(success=False, error=str(e))
+
+        return DatePickerResult(success=False, error=f"无法选择日期: {target_iso}")
+
+    def _select_by_element_click(self, context, target_date: datetime, target_day: str, target_iso: str, open_picker: bool = True) -> bool:
+        """通过元素点击方式选择日期 - 核心跨月逻辑"""
+        if open_picker and not self._open_date_picker(context):
+            return False
+
         now = datetime.now()
         months_diff = (target_date.year - now.year) * 12 + (target_date.month - now.month)
 
-        # Impact 专用快速路径：仅当目标日期在当前显示月份时才使用，
-        # 避免跨月时误点当前月份中同一天数的日期（如 3/31 → 4/1 误点 3/1）
+        # 当前月份快速路径
         if months_diff == 0 and self._is_impact_modal_iframe(context):
-            if self._try_pick_date_in_view_fast_impact(context, target_day, target_iso):
+            if self._try_pick_by_text(context, target_day, target_iso):
                 return True
 
         direction = 'next' if months_diff >= 0 else 'prev'
-
-        # 尝试在当前视图或切换月份后找到目标日期
         max_attempts = max(abs(months_diff) + 2, 3)
-        # Impact 场景下日期通常在相邻月份内，限制尝试次数以减少多余导航
-        if self._is_impact_modal_iframe(context) and max_attempts > 4:
-            max_attempts = 4
 
         for step in range(max_attempts):
             if step > 0:
-                if not self._click_month_nav(context, direction, fast_timeout=self._is_impact_modal_iframe(context)):
-                    if step == 1 and direction == 'next':
-                        if self._click_month_nav(context, 'prev', fast_timeout=self._is_impact_modal_iframe(context)):
-                            if self._try_pick_date_in_view(context, target_day, target_iso):
-                                return True
+                if not self._click_month_nav(context, direction):
                     break
-            # 尚未导航到目标月份时，仅做属性匹配（完整 ISO），
-            # 防止文本兜底误点当前月份中同一天数的日期（如想点 4/1 却点了 3/1）
+            # 导航到目标月前，仅用属性匹配防止误点
             need_attr_only = (months_diff != 0 and step == 0)
             if self._try_pick_date_in_view(context, target_day, target_iso, attr_only=need_attr_only):
                 return True
 
-        logger.warning(f"元素点击方式未找到目标日期: {target_iso}")
         return False
-    
-    def _select_by_vision_rpa(self, context, target_date: datetime) -> bool:
-        """通过视觉 RPA 方式选择日期"""
-        if not self._vision_handler:
-            logger.debug("未设置视觉 RPA 处理器，跳过此策略")
-            return False
-        
-        try:
-            # 截取当前页面截图
-            screenshot_path = None
-            try:
-                screenshot_path = context.get_screenshot(
-                    path=os.path.join(os.path.dirname(__file__), 'logs', 'screenshots'),
-                    name=f"date_picker_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-                )
-            except Exception as e:
-                logger.warning(f"截图失败: {e}")
-            
-            # 调用视觉处理器
-            result = self._vision_handler(context, target_date, screenshot_path)
-            if result:
-                logger.info(f"已通过视觉 RPA 选择日期: {target_date.strftime('%Y-%m-%d')}")
-                return True
-        except Exception as e:
-            logger.warning(f"视觉 RPA 选择日期失败: {e}")
-        
-        return False
-    
+
     def _is_impact_modal_iframe(self, context) -> bool:
         """判断是否为 Impact Proposal 弹窗 iframe"""
         try:
-            data_testid = (context.attr('data-testid') or '').strip()
-            return data_testid == 'uicl-modal-iframe-content'
+            return (context.attr('data-testid') or '').strip() == 'uicl-modal-iframe-content'
         except Exception:
             return False
 
-    def _try_pick_date_in_view_fast_impact(
-        self,
-        context,
-        target_day: str,
-        target_iso: str,
-    ) -> bool:
-        """Impact 专用快速路径：按日期文本直接点击"""
+    def _open_date_picker(self, context) -> bool:
+        """打开日期选择器 - 精简版"""
         try:
-            cells = context.eles('css:td, .day, [class*="day"], [class*="date"]')
+            btn = context.ele(self.DATE_INPUT_SELECTORS[0], timeout=0.2)
+            if btn:
+                try:
+                    btn.click(by_js=True)
+                except Exception:
+                    btn.click(by_js=None)
+                time.sleep(0.25)
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _is_disabled(self, ele) -> bool:
+        """检查元素是否禁用 - 精简版"""
+        try:
+            cls = (ele.attr('class') or '').lower()
+            return any(k in cls for k in self.DISABLED_KEYWORDS)
         except Exception:
             return False
 
-        if not cells:
+    def _try_pick_by_text(self, context, target_day: str, target_iso: str) -> bool:
+        """Impact 专用：当月日期按文本快速点击"""
+        try:
+            cells = context.eles('css:td')
+        except Exception:
             return False
 
         for cell in cells or []:
@@ -1127,255 +950,71 @@ class DatePicker:
                 try:
                     cell.click(by_js=True)
                 except Exception:
-                    try:
-                        cell.click()
-                    except Exception:
-                        continue
-                logger.info(f"已通过快速路径选择日期: {target_iso}")
+                    cell.click()
+                logger.info(f"已选择日期: {target_iso}")
                 time.sleep(0.2)
                 return True
             except Exception:
                 continue
-
         return False
 
-    def _open_date_picker(self, context) -> bool:
-        """打开日期选择器"""
-        is_impact = self._is_impact_modal_iframe(context)
-        timeout = 0.5
-        if is_impact:
-            timeout = 0.2
-            # Impact 快速路径：仅用 DevTools 确认的精确选择器，避免遍历多选择器
-            try:
-                btn = context.ele(self.DATE_INPUT_SELECTORS[0], timeout=0.1)
-                if btn:
-                    try:
-                        btn.click(by_js=True)
-                    except Exception:
-                        btn.click(by_js=None)
-                    logger.info("已打开日期选择器")
-                    time.sleep(0.25)
-                    return True
-            except Exception:
-                pass
-
-        for selector in self.DATE_INPUT_SELECTORS:
-            try:
-                btn = context.ele(selector, timeout=timeout)
-                if btn:
-                    if is_impact:
-                        # Impact 场景：直接点击，避免额外的 clickable 等待
-                        try:
-                            btn.click(by_js=True)
-                        except Exception:
-                            btn.click(by_js=None)
-                    else:
-                        try:
-                            btn.wait.clickable()
-                        except Exception:
-                            pass
-                        btn.click(by_js=None)
-                    logger.info("已打开日期选择器")
-                    time.sleep(0.3 if is_impact else 0.5)
-                    return True
-            except Exception:
-                continue
-        
-        # Impact 平台兜底：通过 Start Date 标签定位日期按钮
-        # 日期按钮显示格式如 "Jan 30, 2026"
-        try:
-            # 方法1：通过 Start Date 标签向上查找父级中的按钮
-            start_date_label = context.ele('text:Start Date', timeout=0.3 if is_impact else 0.5)
-            if start_date_label:
-                parent = start_date_label.parent()
-                for _ in range(5):
-                    if parent:
-                        # 查找包含年份的按钮
-                        current_year = datetime.now().year
-                        btns = parent.eles('tag:button', timeout=0.2 if is_impact else 0.3)
-                        for btn in btns or []:
-                            btn_text = btn.text or ''
-                            # 匹配日期格式：月份缩写 + 日 + 年
-                            if any(m in btn_text for m in self.IMPACT_DATE_BUTTON_MONTHS):
-                                if str(current_year) in btn_text or str(current_year + 1) in btn_text:
-                                    btn.click(by_js=True)
-                                    logger.info(f"已通过 Start Date 标签打开日期选择器: {btn_text}")
-                                    time.sleep(0.3 if is_impact else 0.5)
-                                    return True
-                        parent = parent.parent()
-        except Exception as e:
-            logger.debug(f"通过 Start Date 标签查找失败: {e}")
-        
-        # 方法2：直接查找所有按钮，匹配日期格式
-        try:
-            current_year = datetime.now().year
-            all_buttons = context.eles('tag:button', timeout=0.3 if is_impact else 0.5)
-            for btn in all_buttons or []:
-                btn_text = btn.text or ''
-                if any(m in btn_text for m in self.IMPACT_DATE_BUTTON_MONTHS):
-                    if str(current_year) in btn_text or str(current_year + 1) in btn_text:
-                        btn.click(by_js=True)
-                        logger.info(f"已通过日期格式匹配打开日期选择器: {btn_text}")
-                        time.sleep(0.3 if is_impact else 0.5)
-                        return True
-        except Exception as e:
-            logger.debug(f"通过日期格式匹配查找失败: {e}")
-        
-        logger.warning("未找到日期选择器按钮")
-        return False
-    
-    # Impact 平台专用：日期按钮显示格式中的月份缩写
-    IMPACT_DATE_BUTTON_MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
-    
-    def _is_disabled(self, ele) -> bool:
-        """检查元素是否为禁用状态"""
-        try:
-            aria_disabled = (ele.attr('aria-disabled') or '').strip().lower()
-            if aria_disabled == 'true':
-                return True
-        except Exception:
-            pass
-        
-        try:
-            cls = (ele.attr('class') or '').lower()
-            # 通用禁用关键词检查
-            disabled_keywords = [k for k in self.DISABLED_KEYWORDS if k not in ('today', 'current')]
-            if any(k in cls for k in disabled_keywords):
-                return True
-            # 单独检查 "new" 以避免误匹配 "renew" 等词
-            if ' new ' in f' {cls} ' or cls.startswith('new ') or cls.endswith(' new') or cls == 'new':
-                return True
-        except Exception:
-            pass
-        
-        try:
-            if ele.attr('disabled') is not None:
-                return True
-        except Exception:
-            pass
-        
-        try:
-            for attr_name in ('data-outside', 'data-other-month', 'data-adjacent'):
-                val = ele.attr(attr_name)
-                if val and val.lower() in ('true', '1', 'yes'):
-                    return True
-        except Exception:
-            pass
-        
-        return False
-    
     def _try_pick_date_in_view(self, context, target_day: str, target_iso: str, *, attr_only: bool = False) -> bool:
-        """尝试在当前视图中选择目标日期
+        """尝试在当前视图中选择日期 - 优先属性匹配"""
+        try:
+            date_cells = context.eles(self.DATE_CELL_SELECTORS[0])
+        except Exception:
+            return False
 
-        Args:
-            attr_only: 仅使用属性匹配（完整 ISO 日期），跳过纯文本兜底。
-                       用于尚未导航到目标月份时，防止误点当前月份中同一天数的日期。
-        """
-        date_cells = []
-        # 尝试所有选择器
-        for selector in self.DATE_CELL_SELECTORS:
-            try:
-                cells = context.eles(selector)
-                if cells:
-                    date_cells.extend(cells)
-            except Exception:
-                continue
-        
         if not date_cells:
             return False
-        
-        # 优先通过属性匹配完整日期
-        for cell in date_cells or []:
+
+        # 优先通过 data-date 属性精确匹配
+        for cell in date_cells:
+            if self._is_disabled(cell):
+                continue
             try:
-                if self._is_disabled(cell):
-                    continue
-                attrs = []
-                for k in ('data-date', 'data-day', 'aria-label', 'title', 'data-testid'):
-                    try:
-                        v = cell.attr(k)
-                        if v:
-                            attrs.append(str(v))
-                    except Exception:
-                        continue
-                attrs_text = ' '.join(attrs)
-                if target_iso in attrs_text or target_iso.replace('-', '/') in attrs_text:
-                    try:
-                        cell.wait.clickable()
-                    except Exception:
-                        pass
+                data_date = cell.attr('data-date') or ''
+                if target_iso in data_date:
                     cell.click(by_js=None)
                     logger.info(f"已选择日期: {target_iso}")
                     time.sleep(0.3)
                     return True
             except Exception:
                 continue
-        
+
         if attr_only:
             return False
 
-        # 兜底：按日历格子的文本点击
-        for cell in date_cells or []:
+        # 兜底：按文本匹配
+        for cell in date_cells:
+            if self._is_disabled(cell):
+                continue
             try:
-                if self._is_disabled(cell):
-                    continue
-                if (cell.text or '').strip() != target_day:
-                    continue
-                try:
-                    cell.wait.clickable()
-                except Exception:
-                    pass
-                cell.click(by_js=None)
-                logger.info(f"已选择日期: {target_iso}")
-                time.sleep(0.3)
-                return True
+                if (cell.text or '').strip() == target_day:
+                    cell.click(by_js=None)
+                    logger.info(f"已选择日期: {target_iso}")
+                    time.sleep(0.3)
+                    return True
             except Exception:
                 continue
-        
+
         return False
-    
-    def _click_month_nav(self, context, direction: str, fast_timeout: bool = False) -> bool:
-        """点击月份导航按钮"""
+
+    def _click_month_nav(self, context, direction: str) -> bool:
+        """点击月份导航按钮 - 仅使用精确选择器"""
         selectors = self.PREV_MONTH_SELECTORS if direction == 'prev' else self.NEXT_MONTH_SELECTORS
-        timeout = 0.15 if fast_timeout else 0.3
-        sleep_after = 0.25 if fast_timeout else 0.4
 
         for sel in selectors:
             try:
-                btn = context.ele(sel, timeout=timeout)
+                btn = context.ele(sel, timeout=0.15)
                 if btn:
-                    try:
-                        btn.click(by_js=True)
-                        time.sleep(sleep_after)
-                        logger.debug(f"成功点击月份切换按钮: {sel}")
-                        return True
-                    except Exception as e:
-                        logger.debug(f"点击月份按钮失败 ({sel}): {e}")
-                        continue
+                    btn.click(by_js=True)
+                    time.sleep(0.25)
+                    logger.debug(f"已点击 {direction} 月份按钮")
+                    return True
             except Exception:
                 continue
 
-        # 兜底：通过箭头字符查找
-        try:
-            header_btns = context.eles('css:button', timeout=0.3 if fast_timeout else 0.5)
-            for btn in header_btns or []:
-                try:
-                    btn_text = (btn.text or '').strip()
-                    if len(btn_text) > 10:
-                        continue
-                    if direction == 'prev' and any(c in btn_text for c in ('←', '<', '‹', '«')):
-                        btn.click(by_js=True)
-                        time.sleep(sleep_after)
-                        return True
-                    elif direction == 'next' and any(c in btn_text for c in ('→', '>', '›', '»')):
-                        btn.click(by_js=True)
-                        time.sleep(sleep_after)
-                        return True
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        
-        logger.warning(f"未找到月份切换按钮 (direction={direction})")
         return False
 
 
@@ -1646,7 +1285,7 @@ class ProposalSender:
         """
         在列表页查找可点击的 Send Proposal 按钮（多策略兜底）。
 
-        说明：Impact 的 DOM/测试 id 可能变动，单一 selector 容易导致一直“找不到按钮 → 滚动”。
+        说明：Impact 的 DOM/测试 id 可能变动，单一 selector 容易导致一直"找不到按钮 → 滚动"。
         """
         results: list = []
         seen: set[int] = set()
@@ -1900,7 +1539,7 @@ class ProposalSender:
                             )
                             break
                         
-                        # 连续多次空滚动仍未发现新按钮，则提前退出，避免看起来像“卡死/报错”
+                        # 连续多次空滚动仍未发现新按钮，则提前退出，避免看起来像"卡死/报错"
                         max_empty_scrolls = max(20, max_count * 2)
                         if empty_scrolls >= max_empty_scrolls:
                             logger.info(
@@ -3143,7 +2782,7 @@ class ProposalSender:
         - 但 Impact 的 UI 有时会出现「click 不报错但业务上未真正选中」或
           「已经选中但我们用的 selector 找不到 chip」两类问题。
 
-        本函数尽量用“文本匹配 + 排除下拉 option 区域”的方式验证：
+        本函数尽量用"文本匹配 + 排除下拉 option 区域"的方式验证：
         1) 定位 tag 输入容器（优先 data-testid，其次 class 回退）；
         2) 扫描容器内所有有文本的节点，过滤掉 role=option/listbox 及其子树；
         3) 对文本做规范化后与 target_norm 比较。
@@ -3927,13 +3566,14 @@ class MenuUI:
         self,
         config: ConfigManager,
         template_manager: TemplateManager,
-        console: Console,
+        logger: Logger,
         browser: BrowserManager | None = None,
         proposal_sender: "ProposalSender | None" = None,
     ):
         self.config = config
         self.template_manager = template_manager
-        self.console = console
+        self.logger = logger
+        self.console = Console()
         self.browser = browser
         self.proposal_sender = proposal_sender
     
@@ -4469,12 +4109,12 @@ class ImpactRPA:
         self.console = Console()
         self.config = ConfigManager()
         self.template_manager = TemplateManager(self.config)
-        self.browser = BrowserManager(self.console, self.config)
+        self.browser = BrowserManager(logger, self.config)
         self.proposal_sender = ProposalSender(self.browser, self.template_manager, self.console, self.config)
         self.menu = MenuUI(
             self.config,
             self.template_manager,
-            self.console,
+            logger,
             browser=self.browser,
             proposal_sender=self.proposal_sender,
         )
