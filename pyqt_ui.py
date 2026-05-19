@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from typing import IO, cast
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QEvent, QObject, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -452,6 +452,38 @@ class TemplateDialog(QDialog):
         self.load_templates()
 
 
+class BrowserProbeWorker(QThread):
+    """后台浏览器连接检测线程"""
+    probe_result = pyqtSignal(bool)
+
+    def __init__(self, browser: BrowserManager, timeout_ms: int = 200, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+        self.timeout_ms = timeout_ms
+
+    def run(self) -> None:
+        connected = False
+        try:
+            import threading
+            result = {"connected": False}
+
+            def check():
+                try:
+                    if self.browser and self.browser.is_connected():
+                        result["connected"] = True
+                except Exception:
+                    pass
+
+            t = threading.Thread(target=check)
+            t.daemon = True
+            t.start()
+            t.join(timeout=self.timeout_ms / 1000.0)
+            connected = result["connected"]
+        except Exception:
+            connected = False
+        self.probe_result.emit(connected)
+
+
 class TaskWorker(QThread):
     log_line = pyqtSignal(str)
     task_done = pyqtSignal(int, bool, str)
@@ -519,13 +551,122 @@ class MainWindow(QMainWindow):
         self.template_manager = TemplateManager(self.config)
         self.browser: BrowserManager | None = None
         self.worker: TaskWorker | None = None
+        self.probe_worker: BrowserProbeWorker | None = None
+        self._cached_browser_connected = False
+        self._lock_widgets: list = []
+        self._highlight_animation: QTimer | None = None
 
         self.init_ui()
+        self._install_event_filters()
         self.refresh_all()
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_runtime_state)
-        self.refresh_timer.start(5000)
+        self.refresh_timer.start(10000)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ty:ignore[invalid-method-override]
+        """拦截被锁定控件的点击事件"""
+        if obj in self._lock_widgets and event.type() == QEvent.Type.MouseButtonPress:
+            widget = cast(QWidget, obj)
+            # 只有在控件被禁用时才显示提示（浏览器未连接时）
+            if not widget.isEnabled():
+                self._show_connect_prompt(widget)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _install_event_filters(self) -> None:
+        """为被锁定的控件安装事件过滤器"""
+        self._lock_widgets = [
+            self.tab_widget,
+            self.start_btn,
+            self.list_max_count_input,
+            self.list_start_idx_input,
+            self.search_max_count_input,
+            self.search_start_row_input,
+        ]
+        for widget in self._lock_widgets:
+            widget.installEventFilter(self)
+
+    def _show_connect_prompt(self, source_widget) -> None:
+        """显示连接提示并引导用户到连接按钮"""
+        # 显示提示框
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setWindowTitle("界面已锁定")
+        msg_box.setText("请先点击右上角的「连接浏览器」按钮")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+
+        # 开始高亮动效引导
+        self._start_highlight_animation()
+
+    def _start_highlight_animation(self) -> None:
+        """启动高亮闪烁动效引导用户视线"""
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+
+        self._highlight_animation = QTimer(self)
+        highlight_state = {"on": False}
+
+        # 保存原始样式
+        original_style = self.connect_btn.styleSheet()
+
+        def animate():
+            highlight_state["on"] = not highlight_state["on"]
+            if highlight_state["on"]:
+                self.connect_btn.setStyleSheet(original_style + """
+                    QPushButton {
+                        background-color: #E74C3C;
+                        color: #FFFFFF;
+                        border: 2px solid #C0392B;
+                        border-radius: 12px;
+                        padding: 6px 16px;
+                        font-weight: bold;
+                    }
+                """)
+                # 确保按钮在视口内
+                rect = self.connect_btn.geometry()
+                if rect.top() < 0:
+                    self.scroll_to_widget(self.connect_btn)
+            else:
+                self.connect_btn.setStyleSheet(original_style)
+
+        self._highlight_animation.timeout.connect(animate)
+        self._highlight_animation.start(400)  # 每400ms切换状态
+
+        # 3秒后自动停止高亮
+        QTimer.singleShot(3000, self._stop_highlight_animation)
+
+    def _stop_highlight_animation(self) -> None:
+        """停止高亮动效"""
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+            self._highlight_animation = None
+        # 恢复原始样式
+        self.connect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #34495E;
+                color: #ECF0F1;
+                border: none;
+                border-radius: 12px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2C3E50;
+            }
+            QPushButton:disabled {
+                background-color: #1ABC9C;
+                color: #ECF0F1;
+            }
+        """)
+
+    def scroll_to_widget(self, widget: QWidget) -> None:
+        """滚动到指定控件位置"""
+        # 确保按钮在视口内
+        self.ensurePolished()
+        self.activateWindow()
+        self.raise_()
 
     @staticmethod
     def _build_silent_console() -> Console:
@@ -715,6 +856,7 @@ class MainWindow(QMainWindow):
         self.refresh_templates()
         self.refresh_settings_inputs()
         self.refresh_runtime_state()
+        self._lock_interface()
         self.log_message("系统启动，真实配置已加载", "info")
 
     def refresh_templates(self) -> None:
@@ -737,27 +879,62 @@ class MainWindow(QMainWindow):
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(count_today_sent(self.config)))
-        self.update_browser_status(self.detect_browser_connected())
         self.refresh_templates()
         self.refresh_settings_inputs()
+        self._start_browser_probe()
+
+    def _start_browser_probe(self) -> None:
+        """启动后台浏览器连接检测（200ms 超时）"""
+        if self.probe_worker and self.probe_worker.isRunning():
+            return
+
+        target_browser = self.worker.browser if (self.worker and self.worker.browser) else self.browser
+        if not target_browser:
+            self.update_browser_status(False)
+            return
+
+        self.probe_worker = BrowserProbeWorker(target_browser, timeout_ms=200, parent=self)
+        self.probe_worker.probe_result.connect(self._on_browser_probe_result)
+        self.probe_worker.start()
+
+    def _on_browser_probe_result(self, connected: bool) -> None:
+        """处理浏览器连接检测结果"""
+        self._cached_browser_connected = connected
+        self.update_browser_status(connected)
 
     def detect_browser_connected(self) -> bool:
-        if self.worker and self.worker.browser and self.worker.browser.is_connected():
-            return True
+        """返回缓存的浏览器连接状态"""
+        return self._cached_browser_connected
 
-        if self.browser and self.browser.is_connected():
-            return True
+    def _lock_interface(self) -> None:
+        """锁定界面，禁用除连接按钮外的所有交互元素"""
+        self.tab_widget.setEnabled(False)
+        self.start_btn.setEnabled(False)
+        self.list_max_count_input.setEnabled(False)
+        self.list_start_idx_input.setEnabled(False)
+        self.search_max_count_input.setEnabled(False)
+        self.search_start_row_input.setEnabled(False)
 
-        return False
+    def _unlock_interface(self) -> None:
+        """解锁界面，恢复所有交互元素"""
+        self._stop_highlight_animation()
+        self.tab_widget.setEnabled(True)
+        self.start_btn.setEnabled(True)
+        self.list_max_count_input.setEnabled(True)
+        self.list_start_idx_input.setEnabled(True)
+        self.search_max_count_input.setEnabled(True)
+        self.search_start_row_input.setEnabled(True)
 
     def update_browser_status(self, connected: bool) -> None:
-        self.browser_connected = connected
+        self._cached_browser_connected = connected
         if connected:
             self.connect_btn.setText("浏览器已连接")
             self.connect_btn.setEnabled(False)
+            self._unlock_interface()
         else:
             self.connect_btn.setText("连接浏览器")
             self.connect_btn.setEnabled(True)
+            self._lock_interface()
 
     def _on_connect_browser_clicked(self) -> None:
         """手动点击连接浏览器按钮"""
@@ -873,9 +1050,7 @@ class MainWindow(QMainWindow):
     def handle_task_done(self, clicked_count: int, completed_all: bool, error_message: str) -> None:
         if self.worker and self.worker.browser and self.worker.browser.is_connected():
             self.browser = self.worker.browser
-        self.update_browser_status(self.detect_browser_connected())
 
-        self.start_btn.setEnabled(True)
         self.start_btn.setText("开始执行")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("强制停止")
@@ -887,6 +1062,7 @@ class MainWindow(QMainWindow):
         else:
             self.log_message(f"任务结束，当前批次共发送 {clicked_count} 个 Proposal", "warn")
 
+        self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()
         self.worker = None
 
