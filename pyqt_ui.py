@@ -12,6 +12,7 @@ from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -64,7 +65,9 @@ def count_today_sent(config: ConfigManager) -> int:
 
     try:
         for filename in os.listdir(config.log_dir):
-            if not filename.startswith("creator_search_sent_") or not filename.endswith(".json"):
+            if not filename.startswith("creator_search_sent_") or not filename.endswith(
+                ".json"
+            ):
                 continue
             filepath = os.path.join(config.log_dir, filename)
             with open(filepath, "r", encoding="utf-8") as f:
@@ -81,9 +84,14 @@ def count_today_sent(config: ConfigManager) -> int:
 
 def infer_log_level(message: str) -> str:
     lowered = message.lower()
-    if any(token in lowered for token in ("失败", "异常", "错误", "[err]", "traceback")):
+    if any(
+        token in lowered for token in ("失败", "异常", "错误", "[err]", "traceback")
+    ):
         return "error"
-    if any(token in lowered for token in ("警告", "超时", "跳过", "停止请求", "[skip]", "warn")):
+    if any(
+        token in lowered
+        for token in ("警告", "超时", "跳过", "停止请求", "[skip]", "warn")
+    ):
         return "warn"
     if any(token in lowered for token in ("完成", "成功", "[ok]", "✓")):
         return "success"
@@ -153,7 +161,9 @@ class SettingsFormModel(BaseModel):
     dry_run: bool = False
     input_partner_groups_tag: bool = True
 
-    @field_validator("max_proposals", "scroll_delay", "click_delay", "modal_wait", mode="before")
+    @field_validator(
+        "max_proposals", "scroll_delay", "click_delay", "modal_wait", mode="before"
+    )
     @classmethod
     def _strip_numeric_inputs(cls, value):
         if isinstance(value, str):
@@ -222,7 +232,9 @@ def validate_positive_int(value: str, field_name: str) -> int:
         raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
 
 
-def validate_positive_float(value: str, field_name: str, allow_zero: bool = False) -> float:
+def validate_positive_float(
+    value: str, field_name: str, allow_zero: bool = False
+) -> float:
     model = NonNegativeFloatInputModel if allow_zero else PositiveFloatInputModel
     try:
         return model.model_validate({"value": value}).value
@@ -245,8 +257,12 @@ class SettingsDialog(QDialog):
         self.modal_wait_input = QLineEdit(str(snapshot.get("modal_wait", 20.0)))
         self.dry_run_check = QCheckBox("启用 Dry Run（只跑流程，不提交）")
         self.dry_run_check.setChecked(bool(snapshot.get("dry_run", False)))
-        self.partner_groups_check = QCheckBox("在 Proposal 弹窗内输入 Partner Groups 标签")
-        self.partner_groups_check.setChecked(bool(snapshot.get("input_partner_groups_tag", True)))
+        self.partner_groups_check = QCheckBox(
+            "在 Proposal 弹窗内输入 Partner Groups 标签"
+        )
+        self.partner_groups_check.setChecked(
+            bool(snapshot.get("input_partner_groups_tag", True))
+        )
 
         form_layout.addRow("默认发送数量:", self.max_proposals_input)
         form_layout.addRow("滚动延迟 (秒):", self.scroll_delay_input)
@@ -299,8 +315,196 @@ class SettingsDialog(QDialog):
         return validate_positive_int(value, field_name)
 
     @staticmethod
-    def _parse_positive_float(value: str, field_name: str, allow_zero: bool = False) -> float:
+    def _parse_positive_float(
+        value: str, field_name: str, allow_zero: bool = False
+    ) -> float:
         return validate_positive_float(value, field_name, allow_zero=allow_zero)
+
+
+class ConfirmDialog(QDialog):
+    """通用确认对话框"""
+
+    def __init__(self, title: str, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(400)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(message))
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.confirm_btn = QPushButton("确认")
+        self.confirm_btn.setObjectName("primaryBtn")
+        self.confirm_btn.clicked.connect(self.accept)
+
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.confirm_btn)
+        layout.addLayout(btn_layout)
+
+        self.setStyleSheet("""
+            QDialog { background-color: white; }
+            QLabel { font-size: 14px; color: #1e293b; padding: 10px; }
+        """)
+
+
+class ProposalConfirmDialog(QDialog):
+    """Proposal 发送确认对话框，包含模板预览和参数确认"""
+
+    confirmed = False
+    mode: str
+    max_count: int
+    start_value: int
+    selected_term: str | None
+
+    def __init__(
+        self,
+        mode: str,
+        max_count: int,
+        start_value: int,
+        template_name: str,
+        template_content: str,
+        current_term: str,
+        term_options: list[str] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.mode = mode
+        self.max_count = max_count
+        self.start_value = start_value
+        self.selected_term = None
+
+        mode_display = "列表页批量发送" if mode == "list" else "Creator Search 表格发送"
+        start_label = "起始序号" if mode == "list" else "起始行号"
+
+        self.setWindowTitle("确认发送 Proposal")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        # 参数信息
+        info_group = QGroupBox("发送参数")
+        info_layout = QFormLayout(info_group)
+        info_layout.addRow("执行模式:", QLabel(mode_display))
+        info_layout.addRow("发送数量:", QLabel(str(max_count)))
+        info_layout.addRow(f"{start_label}:", QLabel(str(start_value)))
+        layout.addWidget(info_group)
+
+        # 模板预览
+        tpl_group = QGroupBox("当前激活模板")
+        tpl_layout = QVBoxLayout(tpl_group)
+
+        tpl_name_label = QLabel(f"模板名称: {template_name or '未命名'}")
+        tpl_name_label.setStyleSheet("font-weight: bold; color: #0f172a;")
+        tpl_layout.addWidget(tpl_name_label)
+
+        self.tpl_preview = QTextEdit()
+        self.tpl_preview.setReadOnly(True)
+        self.tpl_preview.setMaximumHeight(120)
+        self.tpl_preview.setPlainText(template_content or "(空模板)")
+        self.tpl_preview.setStyleSheet("""
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            color: #334155;
+            font-family: Consolas, monospace;
+        """)
+        tpl_layout.addWidget(self.tpl_preview)
+
+        layout.addWidget(tpl_group)
+
+        # Template Term 选择（如果有选项）
+        self.term_combo: QComboBox | None = None
+        if term_options:
+            term_group = QGroupBox("Template Term 设置")
+            term_layout = QVBoxLayout(term_group)
+
+            term_desc = QLabel("请选择 Template Term（可选）：")
+            term_desc.setStyleSheet("color: #64748b;")
+            term_layout.addWidget(term_desc)
+
+            self.term_combo = QComboBox()
+            self.term_combo.addItem("使用当前设置", userData=None)
+            for opt in term_options:
+                self.term_combo.addItem(opt, userData=opt)
+            # 尝试选中当前值
+            for i in range(self.term_combo.count()):
+                if self.term_combo.itemData(i) == current_term:
+                    self.term_combo.setCurrentIndex(i)
+                    break
+            term_layout.addWidget(self.term_combo)
+            layout.addWidget(term_group)
+
+        elif current_term:
+            term_label = QLabel(f"当前 Template Term: {current_term}")
+            term_label.setStyleSheet("color: #64748b; padding: 5px 0;")
+            layout.addWidget(term_label)
+
+        layout.addStretch()
+
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f1f5f9;
+                color: #475569;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e2e8f0; }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+
+        self.confirm_btn = QPushButton("确认开始发送")
+        self.confirm_btn.setObjectName("primaryBtn")
+        self.confirm_btn.setMinimumHeight(40)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.confirm_btn)
+        layout.addLayout(btn_layout)
+
+        self.setStyleSheet("""
+            QDialog { background-color: #f8fafc; }
+            QGroupBox {
+                background-color: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                margin-top: 10px;
+                font-weight: bold;
+                color: #1e293b;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QLabel { color: #334155; }
+            QFormLayout QLabel { color: #64748b; }
+            QComboBox {
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 6px;
+                background-color: white;
+            }
+        """)
+
+    def _on_confirm(self) -> None:
+        """确认按钮点击处理"""
+        if self.term_combo and self.term_combo.currentData() is not None:
+            self.selected_term = self.term_combo.currentData()
+        self.accept()
+
+    def get_selected_term(self) -> str | None:
+        """获取用户选择的 Template Term"""
+        return self.selected_term
 
 
 class TemplateDialog(QDialog):
@@ -374,7 +578,11 @@ class TemplateDialog(QDialog):
 
         target_id = select_id
         if target_id is None:
-            target_id = self.current_template_id or self.active_id or self.templates[0].get("id")
+            target_id = (
+                self.current_template_id
+                or self.active_id
+                or self.templates[0].get("id")
+            )
 
         for index, tpl in enumerate(self.templates):
             if tpl.get("id") == target_id:
@@ -429,9 +637,13 @@ class TemplateDialog(QDialog):
             saved_data = self.template_manager.load_all()
             saved_templates = saved_data.get("templates", [])
             if saved_templates:
-                self.current_template_id = max(tpl.get("id", 0) for tpl in saved_templates)
+                self.current_template_id = max(
+                    tpl.get("id", 0) for tpl in saved_templates
+                )
         else:
-            if not self.template_manager.update_template(self.current_template_id, name=name, content=content):
+            if not self.template_manager.update_template(
+                self.current_template_id, name=name, content=content
+            ):
                 QMessageBox.critical(self, "失败", "保存模板失败")
                 return
 
@@ -442,7 +654,10 @@ class TemplateDialog(QDialog):
     def delete_template(self) -> None:
         if self.current_template_id is None:
             return
-        if QMessageBox.question(self, "确认删除", "确定删除当前模板吗？") != QMessageBox.StandardButton.Yes:
+        if (
+            QMessageBox.question(self, "确认删除", "确定删除当前模板吗？")
+            != QMessageBox.StandardButton.Yes
+        ):
             return
         if not self.template_manager.delete_template(self.current_template_id):
             QMessageBox.warning(self, "提示", "删除失败，至少需要保留一个模板")
@@ -454,6 +669,7 @@ class TemplateDialog(QDialog):
 
 class BrowserProbeWorker(QThread):
     """后台浏览器连接检测线程"""
+
     probe_result = pyqtSignal(bool)
 
     def __init__(self, browser: BrowserManager, timeout_ms: int = 200, parent=None):
@@ -465,6 +681,7 @@ class BrowserProbeWorker(QThread):
         connected = False
         try:
             import threading
+
             result = {"connected": False}
 
             def check():
@@ -488,7 +705,15 @@ class TaskWorker(QThread):
     log_line = pyqtSignal(str)
     task_done = pyqtSignal(int, bool, str)
 
-    def __init__(self, browser: BrowserManager, config: ConfigManager, mode: str, max_count: int, start_value: int, parent=None):
+    def __init__(
+        self,
+        browser: BrowserManager,
+        config: ConfigManager,
+        mode: str,
+        max_count: int,
+        start_value: int,
+        parent=None,
+    ):
         super().__init__(parent)
         self.browser = browser
         self.config = config
@@ -507,9 +732,16 @@ class TaskWorker(QThread):
         try:
             template_manager = TemplateManager(self.config)
             log_stream = QtLogStream(self.log_line.emit)
-            console = Console(file=cast(IO[str], log_stream), force_terminal=False, color_system=None, width=120)
+            console = Console(
+                file=cast(IO[str], log_stream),
+                force_terminal=False,
+                color_system=None,
+                width=120,
+            )
 
-            self.proposal_sender = ProposalSender(self.browser, template_manager, console, self.config)
+            self.proposal_sender = ProposalSender(
+                self.browser, template_manager, console, self.config
+            )
             if self._stop_requested:
                 self.proposal_sender.request_stop()
 
@@ -543,7 +775,7 @@ class MainWindow(QMainWindow):
         self.setMinimumWidth(900)
         # 限制最小高度
         self.setMinimumHeight(600)
-        
+
         self.setStyleSheet(self.get_stylesheet())
 
         self.config = ConfigManager()
@@ -614,7 +846,9 @@ class MainWindow(QMainWindow):
         def animate():
             highlight_state["on"] = not highlight_state["on"]
             if highlight_state["on"]:
-                self.connect_btn.setStyleSheet(original_style + """
+                self.connect_btn.setStyleSheet(
+                    original_style
+                    + """
                     QPushButton {
                         background-color: #E74C3C;
                         color: #FFFFFF;
@@ -623,7 +857,8 @@ class MainWindow(QMainWindow):
                         padding: 6px 16px;
                         font-weight: bold;
                     }
-                """)
+                """
+                )
                 # 确保按钮在视口内
                 rect = self.connect_btn.geometry()
                 if rect.top() < 0:
@@ -670,7 +905,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _build_silent_console() -> Console:
-        return Console(file=io.StringIO(), force_terminal=False, color_system=None, width=120)
+        return Console(
+            file=io.StringIO(), force_terminal=False, color_system=None, width=120
+        )
 
     def init_ui(self) -> None:
         central_widget = QWidget()
@@ -717,15 +954,21 @@ class MainWindow(QMainWindow):
         stats_layout = QHBoxLayout()
         self.stat_sent_label = QLabel("0")
         self.stat_sent_label.setObjectName("statValue")
-        stats_layout.addWidget(self.create_stat_card("今日已发送", self.stat_sent_label, "Send"))
+        stats_layout.addWidget(
+            self.create_stat_card("今日已发送", self.stat_sent_label, "Send")
+        )
 
         self.stat_tpl_label = QLabel("-")
         self.stat_tpl_label.setObjectName("statValue")
-        stats_layout.addWidget(self.create_stat_card("当前激活模板", self.stat_tpl_label, "Tpl"))
+        stats_layout.addWidget(
+            self.create_stat_card("当前激活模板", self.stat_tpl_label, "Tpl")
+        )
 
         self.stat_term_label = QLabel("-")
         self.stat_term_label.setObjectName("statValue")
-        stats_layout.addWidget(self.create_stat_card("Template Term", self.stat_term_label, "Term"))
+        stats_layout.addWidget(
+            self.create_stat_card("Template Term", self.stat_term_label, "Term")
+        )
         main_layout.addLayout(stats_layout)
 
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -776,7 +1019,9 @@ class MainWindow(QMainWindow):
         self.search_start_row_input = QLineEdit("1")
         search_layout.addRow("发送数量 (Max Count):", self.search_max_count_input)
         search_layout.addRow("起始行号 (Start Row):", self.search_start_row_input)
-        search_layout.addRow(QLabel("提示: Creator Search 模式，请先在浏览器内完成筛选。"))
+        search_layout.addRow(
+            QLabel("提示: Creator Search 模式，请先在浏览器内完成筛选。")
+        )
         self.tab_widget.addTab(search_tab, "Creator Search 表格发送")
 
         task_layout.addWidget(self.tab_widget)
@@ -888,12 +1133,18 @@ class MainWindow(QMainWindow):
         if self.probe_worker and self.probe_worker.isRunning():
             return
 
-        target_browser = self.worker.browser if (self.worker and self.worker.browser) else self.browser
+        target_browser = (
+            self.worker.browser
+            if (self.worker and self.worker.browser)
+            else self.browser
+        )
         if not target_browser:
             self.update_browser_status(False)
             return
 
-        self.probe_worker = BrowserProbeWorker(target_browser, timeout_ms=200, parent=self)
+        self.probe_worker = BrowserProbeWorker(
+            target_browser, timeout_ms=200, parent=self
+        )
         self.probe_worker.probe_result.connect(self._on_browser_probe_result)
         self.probe_worker.start()
 
@@ -949,7 +1200,11 @@ class MainWindow(QMainWindow):
                     logger.info("浏览器连接成功")
                 else:
                     self.update_browser_status(False)
-                    QMessageBox.warning(self, "连接失败", "无法连接浏览器，请确认 Chrome/Edge 已打开并已登录 Impact")
+                    QMessageBox.warning(
+                        self,
+                        "连接失败",
+                        "无法连接浏览器，请确认 Chrome/Edge 已打开并已登录 Impact",
+                    )
                     logger.warning("浏览器连接失败")
             except Exception as e:
                 self.update_browser_status(False)
@@ -997,36 +1252,108 @@ class MainWindow(QMainWindow):
     def parse_positive_int(value: str, field_name: str) -> int:
         return validate_positive_int(value, field_name)
 
+    def _show_confirm_dialog(self) -> ProposalConfirmDialog | None:
+        """显示确认对话框，返回对话框实例或 None（如果取消）"""
+        try:
+            if self.tab_widget.currentIndex() == 0:
+                mode = "list"
+                max_count = self.parse_positive_int(
+                    self.list_max_count_input.text(), "发送数量"
+                )
+                start_value = self.parse_positive_int(
+                    self.list_start_idx_input.text(), "起始序号"
+                )
+            else:
+                mode = "search"
+                max_count = self.parse_positive_int(
+                    self.search_max_count_input.text(), "发送数量"
+                )
+                start_value = self.parse_positive_int(
+                    self.search_start_row_input.text(), "起始行号"
+                )
+        except ValueError as e:
+            QMessageBox.warning(self, "输入错误", str(e))
+            return None
+
+        if not self.browser or not self.browser.is_connected():
+            QMessageBox.warning(
+                self, "浏览器未连接", "请先点击「连接浏览器」按钮连接浏览器"
+            )
+            return None
+
+        # 获取当前模板信息
+        active_tpl = self.template_manager.get_active_template_info()
+        template_name = active_tpl.get("name", "") if active_tpl else ""
+        template_content = active_tpl.get("content", "") if active_tpl else ""
+
+        # 获取当前 Template Term 设置
+        settings = self.settings_service.get_snapshot()
+        current_term = settings.get("template_term", "")
+
+        # 获取 Template Term 选项（需要浏览器连接）
+        term_options: list[str] = []
+        if self.browser and self.browser.is_connected():
+            try:
+                iframe = self.browser.get_active_iframe()
+                if iframe:
+                    from domain.proposal_sender import ProposalSender
+
+                    sender = ProposalSender.__new__(ProposalSender)
+                    sender.browser = self.browser
+                    sender.config = self.config
+                    term_options = sender.get_template_term_options(iframe)
+            except Exception:
+                pass
+
+        # 显示确认对话框
+        dialog = ProposalConfirmDialog(
+            mode=mode,
+            max_count=max_count,
+            start_value=start_value,
+            template_name=template_name,
+            template_content=template_content,
+            current_term=current_term,
+            term_options=term_options if term_options else None,
+            parent=self,
+        )
+
+        return dialog
+
     def start_task(self) -> None:
         if self.worker and self.worker.isRunning():
             return
 
-        try:
-            if self.tab_widget.currentIndex() == 0:
-                mode = "list"
-                max_count = self.parse_positive_int(self.list_max_count_input.text(), "发送数量")
-                start_value = self.parse_positive_int(self.list_start_idx_input.text(), "起始序号")
-                self.log_message(
-                    f"开始发送 Send Proposal，模式: 列表页，目标数量: {max_count}，起始序号: {start_value}",
-                    "highlight",
-                )
-            else:
-                mode = "search"
-                max_count = self.parse_positive_int(self.search_max_count_input.text(), "发送数量")
-                start_value = self.parse_positive_int(self.search_start_row_input.text(), "起始行号")
-                self.log_message(
-                    f"开始发送 Send Proposal，模式: Creator Search，目标数量: {max_count}，起始行号: {start_value}",
-                    "highlight",
-                )
-        except ValueError as e:
-            QMessageBox.warning(self, "输入错误", str(e))
+        # 显示确认对话框
+        dialog = self._show_confirm_dialog()
+        if dialog is None:
             return
 
-        if not self.browser or not self.browser.is_connected():
-            QMessageBox.warning(self, "浏览器未连接", "请先点击「连接浏览器」按钮连接浏览器")
+        if not dialog.exec():
+            self.log_message("用户取消发送", "warn")
             return
 
-        self.worker = TaskWorker(self.browser, self.config, mode, max_count, start_value, self)
+        # 获取用户选择的参数
+        mode = dialog.mode
+        max_count = dialog.max_count
+        start_value = dialog.start_value
+        selected_term = dialog.get_selected_term()
+
+        # 如果用户选择了新的 Template Term，更新设置
+        if selected_term:
+            settings = self.settings_service.get_snapshot()
+            settings["template_term"] = selected_term
+            self.settings_service.save(settings)
+            self.log_message(f"已更新 Template Term 为: {selected_term}", "info")
+
+        self.log_message(
+            f"开始发送 Send Proposal，模式: {'列表页' if mode == 'list' else 'Creator Search'}，"
+            f"目标数量: {max_count}，{'起始序号' if mode == 'list' else '起始行号'}: {start_value}",
+            "highlight",
+        )
+
+        self.worker = TaskWorker(
+            self.browser, self.config, mode, max_count, start_value, self
+        )
         self.worker.log_line.connect(self.handle_worker_log)
         self.worker.task_done.connect(self.handle_task_done)
         self.worker.start()
@@ -1047,7 +1374,9 @@ class MainWindow(QMainWindow):
         self.stop_btn.setText("停止请求中...")
         self.log_message("已发送停止请求，将在当前步骤完成后停止", "warn")
 
-    def handle_task_done(self, clicked_count: int, completed_all: bool, error_message: str) -> None:
+    def handle_task_done(
+        self, clicked_count: int, completed_all: bool, error_message: str
+    ) -> None:
         if self.worker and self.worker.browser and self.worker.browser.is_connected():
             self.browser = self.worker.browser
 
@@ -1060,7 +1389,9 @@ class MainWindow(QMainWindow):
         elif completed_all:
             self.log_message(f"任务完成，共发送 {clicked_count} 个 Proposal", "success")
         else:
-            self.log_message(f"任务结束，当前批次共发送 {clicked_count} 个 Proposal", "warn")
+            self.log_message(
+                f"任务结束，当前批次共发送 {clicked_count} 个 Proposal", "warn"
+            )
 
         self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()

@@ -17,6 +17,17 @@ from exception_handler import exception_handler
 from domain.date_picker import DatePicker
 
 
+class TemplateTermNotConfiguredError(Exception):
+    """Template Term 未配置异常
+
+    当 settings.template_term 为空、未定义或不存在时抛出此异常。
+    """
+
+    def __init__(self, message: str = "Template Term 未配置"):
+        self.message = message
+        super().__init__(self.message)
+
+
 @dataclass(frozen=True)
 class SendProposalsResult:
     """send_proposals 执行结果，用于区分「全部完成」与「提前退出」"""
@@ -43,8 +54,8 @@ class ProposalSender:
         self._partner_group_prefix_len_cache: dict[str, int] = {}
         # 缓存当前日期，保证同一批次内所有 proposal 使用一致的 T+1
         self._cached_today: date | None = None
-        self.counted_attr = 'data-impact-rpa-counted'
-        self.clicked_attr = 'data-impact-rpa-clicked'
+        self.counted_attr = "data-impact-rpa-counted"
+        self.clicked_attr = "data-impact-rpa-clicked"
         # TODO: 优化方向 - 在网页上判断联盟客是否已点击过，避免重复处理
         # 可以通过检查页面上是否有已发送的标记、按钮状态变化、或DOM结构变化来判断
         self.config = config
@@ -58,17 +69,19 @@ class ProposalSender:
         try:
             store = getattr(self.config, "store", None)
             if store is not None:
-                store.subscribe("settings", lambda _k, payload: self.refresh_from_settings(payload))
+                store.subscribe(
+                    "settings", lambda _k, payload: self.refresh_from_settings(payload)
+                )
         except Exception:
             pass
 
         # 滚动进度追踪（防卡顿机制）
         self._scroll_progress = {
-            'last_element_count': 0,
-            'no_progress_frames': 0,
-            'last_scroll_position': 0,
-            'stuck_frames': 0,
-            'max_stuck_frames': 30,  # 连续30帧无进展认为卡顿
+            "last_element_count": 0,
+            "no_progress_frames": 0,
+            "last_scroll_position": 0,
+            "stuck_frames": 0,
+            "max_stuck_frames": 30,  # 连续30帧无进展认为卡顿
         }
 
     def request_stop(self) -> None:
@@ -82,16 +95,16 @@ class ProposalSender:
     def _reset_scroll_progress(self):
         """重置滚动进度追踪"""
         self._scroll_progress = {
-            'last_element_count': 0,
-            'no_progress_frames': 0,
-            'last_scroll_position': 0,
-            'stuck_frames': 0,
-            'max_stuck_frames': 30,
+            "last_element_count": 0,
+            "no_progress_frames": 0,
+            "last_scroll_position": 0,
+            "stuck_frames": 0,
+            "max_stuck_frames": 30,
         }
 
     def _check_scroll_progress(self, elements_count: int) -> dict:
         """检查滚动进度，检测是否卡顿
-        
+
         Returns:
             dict: {
                 'is_stuck': bool,  # 是否卡顿
@@ -148,70 +161,87 @@ class ProposalSender:
                         };
                     })()
                 """)
-                
+
                 if scroll_info and isinstance(scroll_info, dict):
-                    current_scroll = scroll_info.get('position', 0)
+                    current_scroll = scroll_info.get("position", 0)
             except Exception as e:
                 logger.debug(f"获取滚动位置失败: {e}")
-                current_scroll = self._scroll_progress['last_scroll_position']
-            
+                current_scroll = self._scroll_progress["last_scroll_position"]
+
             # 检查是否有新元素
-            has_new_elements = elements_count > self._scroll_progress['last_element_count']
-            
+            has_new_elements = (
+                elements_count > self._scroll_progress["last_element_count"]
+            )
+
             # 检查是否有实际滚动
-            has_scrolled = abs(current_scroll - self._scroll_progress['last_scroll_position']) > 10
-            
+            has_scrolled = (
+                abs(current_scroll - self._scroll_progress["last_scroll_position"]) > 10
+            )
+
             # 更新进度
             if has_new_elements:
-                self._scroll_progress['no_progress_frames'] = 0
-                self._scroll_progress['stuck_frames'] = 0
-                self._scroll_progress['last_element_count'] = elements_count
-                self._scroll_progress['last_scroll_position'] = current_scroll
-                
+                self._scroll_progress["no_progress_frames"] = 0
+                self._scroll_progress["stuck_frames"] = 0
+                self._scroll_progress["last_element_count"] = elements_count
+                self._scroll_progress["last_scroll_position"] = current_scroll
+
                 return {
-                    'is_stuck': False,
-                    'progress_type': 'new_elements',
-                    'details': f'检测到新元素 ({elements_count} 个)'
+                    "is_stuck": False,
+                    "progress_type": "new_elements",
+                    "details": f"检测到新元素 ({elements_count} 个)",
                 }
-            
+
             if has_scrolled:
-                self._scroll_progress['stuck_frames'] = 0
-                self._scroll_progress['last_scroll_position'] = current_scroll
+                self._scroll_progress["stuck_frames"] = 0
+                self._scroll_progress["last_scroll_position"] = current_scroll
                 # 注意：不重置 no_progress_frames，因为可能是虚拟列表
-                
+
                 return {
-                    'is_stuck': False,
-                    'progress_type': 'scrolled',
-                    'details': f'已滚动到 {current_scroll:.0f}px'
+                    "is_stuck": False,
+                    "progress_type": "scrolled",
+                    "details": f"已滚动到 {current_scroll:.0f}px",
                 }
-            
+
             # 既没有新元素，也没有滚动
-            self._scroll_progress['no_progress_frames'] += 1
-            self._scroll_progress['stuck_frames'] += 1
-            
-            is_stuck = self._scroll_progress['stuck_frames'] >= self._scroll_progress['max_stuck_frames']
-            
+            self._scroll_progress["no_progress_frames"] += 1
+            self._scroll_progress["stuck_frames"] += 1
+
+            is_stuck = (
+                self._scroll_progress["stuck_frames"]
+                >= self._scroll_progress["max_stuck_frames"]
+            )
+
             return {
-                'is_stuck': is_stuck,
-                'progress_type': 'stuck',
-                'details': f'连续 {self._scroll_progress["stuck_frames"]} 帧无进展'
+                "is_stuck": is_stuck,
+                "progress_type": "stuck",
+                "details": f"连续 {self._scroll_progress['stuck_frames']} 帧无进展",
             }
-            
+
         except Exception as e:
             logger.warning(f"检查滚动进度失败: {e}")
-            return {
-                'is_stuck': False,
-                'progress_type': 'error',
-                'details': str(e)
-            }
+            return {"is_stuck": False, "progress_type": "error", "details": str(e)}
 
     def _apply_settings(self, settings: dict) -> None:
         """将 settings 应用到实例字段（支持热刷新）。"""
         self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
         self.scroll_delay = float(settings.get("scroll_delay", 1.0))
-        self.template_term = (settings.get("template_term") or "Commission Tier Terms").strip()
-        self.input_partner_groups_tag = bool(settings.get("input_partner_groups_tag", True))
-        self.partner_groups_debug_logging = bool(settings.get("partner_groups_debug_logging", False))
+        # template_term：读取配置值，为空时使用默认值并记录警告
+        raw_term = settings.get("template_term")
+        if not raw_term or not str(raw_term).strip():
+            self.template_term = ""
+            logger.warning(
+                "⚠️  Template Term 未在设置中配置！\n"
+                "    当前值: (空)\n"
+                "    系统将使用默认值 'Commission Tier Terms'，但建议通过确认弹窗明确选择。"
+            )
+        else:
+            self.template_term = str(raw_term).strip()
+        self.input_partner_groups_tag = bool(
+            settings.get("input_partner_groups_tag", True)
+        )
+        self.partner_groups_debug_logging = bool(
+            settings.get("partner_groups_debug_logging", False)
+        )
         self.dry_run = bool(settings.get("dry_run", False))
         default_pg: dict = {"mode": "ui", "api": {}, "id_by_name": {}}
         user_pg = settings.get("partner_groups")
@@ -263,10 +293,12 @@ class ProposalSender:
 
         # 策略1：优先按 uicl-button testid（历史实现）
         try:
-            btns = self.browser.find_elements('css:button[data-testid="uicl-button"]', timeout=1.5)
+            btns = self.browser.find_elements(
+                'css:button[data-testid="uicl-button"]', timeout=1.5
+            )
             for b in btns or []:
                 try:
-                    if 'Send Proposal' in ((b.text or '').strip()):
+                    if "Send Proposal" in ((b.text or "").strip()):
                         _add(b)
                 except Exception:
                     continue
@@ -276,10 +308,10 @@ class ProposalSender:
         # 策略2：直接扫描所有 button 文本
         if not results:
             try:
-                btns = self.browser.find_elements('tag:button', timeout=1.5)
+                btns = self.browser.find_elements("tag:button", timeout=1.5)
                 for b in btns or []:
                     try:
-                        if 'Send Proposal' in ((b.text or '').strip()):
+                        if "Send Proposal" in ((b.text or "").strip()):
                             _add(b)
                     except Exception:
                         continue
@@ -289,21 +321,21 @@ class ProposalSender:
         # 策略3：按文本定位到节点后向上找 button/role=button
         if not results:
             try:
-                nodes = self.browser.find_elements('text:Send Proposal', timeout=1.5)
+                nodes = self.browser.find_elements("text:Send Proposal", timeout=1.5)
                 for n in nodes or []:
                     cur = n
                     for _ in range(8):
                         if not cur:
                             break
                         try:
-                            tag = getattr(cur, 'tag', None)
-                            if isinstance(tag, str) and tag.lower() == 'button':
+                            tag = getattr(cur, "tag", None)
+                            if isinstance(tag, str) and tag.lower() == "button":
                                 _add(cur)
                                 break
                         except Exception:
                             pass
                         try:
-                            if (cur.attr('role') or '').strip().lower() == 'button':
+                            if (cur.attr("role") or "").strip().lower() == "button":
                                 _add(cur)
                                 break
                         except Exception:
@@ -316,7 +348,7 @@ class ProposalSender:
                 pass
 
         return results
-    
+
     def send_proposals(
         self,
         max_count: int = 10,
@@ -326,12 +358,12 @@ class ProposalSender:
     ) -> SendProposalsResult:
         """
         循环点击页面上所有的 Send Proposal 按钮
-        
+
         Args:
             max_count: 最大发送数量
             template_content: 留言模板内容，None 时使用当前激活模板
             start_index: 起始序号（从 1 开始）。例如 3 表示跳过前 2 个可发送目标
-            
+
         Returns:
             SendProposalsResult(clicked_count, completed_all)。
             completed_all 仅当达到 max_count 时为 True；重连失败等会 raise，不返回。
@@ -340,54 +372,62 @@ class ProposalSender:
         self.clear_stop_request()
         # 等待用户操作完成
         if not skip_ready_prompt:
-            self.console.print(Panel(
-                "[bold]请在浏览器中完成以下操作：[/bold]\n"
-                "1. 导航到目标页面\n"
-                "2. 登录账号（如果需要）\n"
-                "3. 完成人机验证（如果出现）\n"
-                "4. 确保页面已正常加载",
-                title="[cyan]提示[/cyan]",
-                border_style="cyan"
-            ))
+            self.console.print(
+                Panel(
+                    "[bold]请在浏览器中完成以下操作：[/bold]\n"
+                    "1. 导航到目标页面\n"
+                    "2. 登录账号（如果需要）\n"
+                    "3. 完成人机验证（如果出现）\n"
+                    "4. 确保页面已正常加载",
+                    title="[cyan]提示[/cyan]",
+                    border_style="cyan",
+                )
+            )
             questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
-        
+
         if start_index < 1:
             logger.warning(f"收到无效 start_index={start_index}，已回退为 1")
             start_index = 1
         skip_remaining = start_index - 1
         skipped_before_start = 0
 
-        logger.info(f"开始发送 Send Proposal，目标数量: {max_count}，起始序号: {start_index}")
+        logger.info(
+            f"开始发送 Send Proposal，目标数量: {max_count}，起始序号: {start_index}"
+        )
 
         # 缓存当前日期，保证同一批次内 T+1 一致
         self._cached_today = date.today()
-        logger.info(f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}")
+        logger.info(
+            f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}"
+        )
 
         if template_content is None:
             template_content = self.template_manager.get_active_template()
-        
-        clicked_count = 0             # 已成功点击的 Send Proposal 按钮数量
-        total_scrolls = 0             # 已执行的页面向下滚动次数（用于查找新按钮）
-        consecutive_errors = 0        # 连续发生的异常次数（如超限则尝试重连）
-        pending_batch_buttons = 0     # 尚未完成点击的按钮批次数，控制批量操作时逻辑
-        total_detected_buttons = 0    # 累计检测到的所有 Send Proposal 按钮总数
-        empty_scrolls = 0             # 连续未检测到新按钮的滚动次数（可能已无可点目标）
-        
+
+        clicked_count = 0  # 已成功点击的 Send Proposal 按钮数量
+        total_scrolls = 0  # 已执行的页面向下滚动次数（用于查找新按钮）
+        consecutive_errors = 0  # 连续发生的异常次数（如超限则尝试重连）
+        pending_batch_buttons = 0  # 尚未完成点击的按钮批次数，控制批量操作时逻辑
+        total_detected_buttons = 0  # 累计检测到的所有 Send Proposal 按钮总数
+        empty_scrolls = 0  # 连续未检测到新按钮的滚动次数（可能已无可点目标）
+
         # 根据目标数量动态调整最大滚动次数（至少为目标数量的3倍，但不超过固定上限）
         # 这样可以确保有足够的滚动次数来找到目标数量的按钮
         effective_max_scrolls = min(max(max_count * 3, 200), self.max_scrolls * 5)
-        
+
         if self.dry_run:
-            self.console.print(Panel(
-                "[bold yellow]⚠️  开发测试模式 (DRY-RUN)[/bold yellow]\n"
-                "会点击列表页的 Send Proposal 按钮并打开弹窗\n"
-                "会填写弹窗表单，但[bold]不会点击弹窗中的提交按钮[/bold]\n"
-                "如需正式运行，请在 config/settings.json 中设置 \"dry_run\": false",
-                title="[yellow]测试模式[/yellow]",
-                border_style="yellow"
-            ))
+            self.console.print(
+                Panel(
+                    "[bold yellow]⚠️  开发测试模式 (DRY-RUN)[/bold yellow]\n"
+                    "会点击列表页的 Send Proposal 按钮并打开弹窗\n"
+                    "会填写弹窗表单，但[bold]不会点击弹窗中的提交按钮[/bold]\n"
+                    '如需正式运行，请在 config/settings.json 中设置 "dry_run": false',
+                    title="[yellow]测试模式[/yellow]",
+                    border_style="yellow",
+                )
+            )
             logger.info("[DRY-RUN] 开发测试模式已启用，不会点击弹窗中的提交按钮")
-        
+
         self.console.print(
             f"\n[bold cyan]开始循环点击 Send Proposal 按钮 "
             f"(目标: {max_count} 个，起始序号: {start_index}，最大滚动: {effective_max_scrolls} 次)...[/bold cyan]"
@@ -402,11 +442,15 @@ class ProposalSender:
         while clicked_count < max_count and total_scrolls < effective_max_scrolls:
             if self._stop_requested:
                 self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
-                logger.info(f"发送任务被请求停止，已发送 {clicked_count}/{max_count} 个")
+                logger.info(
+                    f"发送任务被请求停止，已发送 {clicked_count}/{max_count} 个"
+                )
                 break
             # 检查是否需要重连
             if consecutive_errors >= self.max_consecutive_errors:
-                self.console.print("[yellow]连续多次错误，尝试重新连接浏览器...[/yellow]")
+                self.console.print(
+                    "[yellow]连续多次错误，尝试重新连接浏览器...[/yellow]"
+                )
                 if self.browser.reconnect():
                     consecutive_errors = 0
                     time.sleep(1)
@@ -417,27 +461,27 @@ class ProposalSender:
                         context={
                             "consecutive_errors": consecutive_errors,
                             "total_scrolls": total_scrolls,
-                            "clicked_count": clicked_count
+                            "clicked_count": clicked_count,
                         },
                         send_notification=False,
                     )
                     self.console.print("[red]重连失败，停止执行[/red]")
                     raise RuntimeError("浏览器重连失败") from err
-            
+
             try:
                 # 查找当前可见的所有 Send Proposal 按钮（多策略兜底）
                 buttons = self._find_send_proposal_buttons()
-                
+
                 if buttons is None:
                     consecutive_errors += 1
                     if self.browser.reconnect():
                         consecutive_errors = 0
                         time.sleep(1)
                     continue
-                
+
                 # _find_send_proposal_buttons 已过滤为目标按钮，这里直接使用
                 send_proposal_buttons = [b for b in (buttons or []) if b]
-                
+
                 available_buttons = []
                 newly_counted = 0
                 raw_buttons_count = len(send_proposal_buttons)
@@ -445,10 +489,10 @@ class ProposalSender:
                 already_counted_count = 0
                 mark_count_failed = 0
                 for btn in send_proposal_buttons:
-                    if btn.attr(self.clicked_attr) == 'true':
+                    if btn.attr(self.clicked_attr) == "true":
                         skipped_clicked_count += 1
                         continue
-                    if btn.attr(self.counted_attr) != 'true':
+                    if btn.attr(self.counted_attr) != "true":
                         if self._mark_button_state(btn, self.counted_attr):
                             pending_batch_buttons += 1
                             total_detected_buttons += 1
@@ -458,7 +502,7 @@ class ProposalSender:
                     else:
                         already_counted_count += 1
                     available_buttons.append(btn)
-                
+
                 if newly_counted > 0:
                     empty_scrolls = 0
                     self.console.print(
@@ -467,7 +511,7 @@ class ProposalSender:
                     logger.debug(
                         f"新增 {newly_counted} 个 Send Proposal 按钮，当前批次待发送 {pending_batch_buttons} 个"
                     )
-                
+
                 if not available_buttons:
                     if pending_batch_buttons <= 0:
                         if raw_buttons_count == 0:
@@ -487,10 +531,10 @@ class ProposalSender:
                                 "准备滚动加载更多。"
                             )
                         empty_scrolls += 1
-                        
+
                         # 检查滚动进度（防卡顿机制）
                         scroll_check = self._check_scroll_progress(raw_buttons_count)
-                        if scroll_check['is_stuck']:
+                        if scroll_check["is_stuck"]:
                             logger.warning(
                                 f"检测到滚动卡顿：{scroll_check['details']}，"
                                 f"提前退出（已发送 {clicked_count}/{max_count}）"
@@ -500,7 +544,7 @@ class ProposalSender:
                                 f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
                             )
                             break
-                        
+
                         # 连续多次空滚动仍未发现新按钮，则提前退出，避免看起来像"卡死/报错"
                         max_empty_scrolls = max(20, max_count * 2)
                         if empty_scrolls >= max_empty_scrolls:
@@ -535,36 +579,50 @@ class ProposalSender:
                         )
                         pending_batch_buttons = 0
                         continue
-                
+
                 send_proposal_buttons = available_buttons
-                
+
                 # 重置连续错误计数
                 consecutive_errors = 0
-                
+
                 # 遍历当前可见的按钮并点击
                 should_scroll_after_batch = False
                 for btn in send_proposal_buttons:
                     if self._stop_requested:
-                        self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
-                        logger.info(f"发送任务在批次内被请求停止，已发送 {clicked_count}/{max_count} 个")
+                        self.console.print(
+                            "[yellow]检测到停止请求，结束当前发送任务[/yellow]"
+                        )
+                        logger.info(
+                            f"发送任务在批次内被请求停止，已发送 {clicked_count}/{max_count} 个"
+                        )
                         return SendProposalsResult(
                             clicked_count=clicked_count,
                             completed_all=False,
                         )
                     if clicked_count >= max_count:
                         logger.info(f"已达到目标数量 {max_count}，停止发送")
-                        self.console.print(f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]")
-                        self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
-                        return SendProposalsResult(clicked_count=clicked_count, completed_all=True)
+                        self.console.print(
+                            f"\n[bold green]✓ 已达到目标数量 {max_count}，停止发送[/bold green]"
+                        )
+                        self.console.print(
+                            f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]"
+                        )
+                        return SendProposalsResult(
+                            clicked_count=clicked_count, completed_all=True
+                        )
 
                     if skip_remaining > 0:
                         if self._mark_button_state(btn, self.clicked_attr):
                             skip_remaining -= 1
                             skipped_before_start += 1
                             if pending_batch_buttons > 0:
-                                pending_batch_buttons = max(pending_batch_buttons - 1, 0)
+                                pending_batch_buttons = max(
+                                    pending_batch_buttons - 1, 0
+                                )
                             if skip_remaining == 0:
-                                logger.info(f"已完成起始偏移，累计跳过 {skipped_before_start} 个按钮，开始正式发送")
+                                logger.info(
+                                    f"已完成起始偏移，累计跳过 {skipped_before_start} 个按钮，开始正式发送"
+                                )
                                 self.console.print(
                                     f"[dim]已跳过前 {skipped_before_start} 个目标，开始正式发送[/dim]"
                                 )
@@ -573,10 +631,10 @@ class ProposalSender:
                         else:
                             logger.warning("起始偏移阶段标记按钮失败，稍后重试该按钮")
                         continue
-                    
+
                     try:
                         selected_tab = self._get_selected_tab_value(btn)
-                        
+
                         parent = btn.parent()
                         for retry_idx in range(10):
                             if parent:
@@ -585,54 +643,79 @@ class ProposalSender:
                                     time.sleep(0.2)
                                     parent.hover()
                                     time.sleep(0.3)
-                                    
+
                                     clicked = False
                                     try:
                                         btn.click(by_js=True)
                                         clicked = True
                                     except Exception as click_err:
                                         error_msg = str(click_err).lower()
-                                        if 'norect' in error_msg or '没有位置' in error_msg:
+                                        if (
+                                            "norect" in error_msg
+                                            or "没有位置" in error_msg
+                                        ):
                                             try:
                                                 parent.click(by_js=True)
                                                 clicked = True
                                             except Exception as parent_click_err:
-                                                logger.warning(f"点击父元素失败: {parent_click_err}")
+                                                logger.warning(
+                                                    f"点击父元素失败: {parent_click_err}"
+                                                )
                                                 pass
                                         if not clicked:
                                             raise click_err
-                                    
+
                                     if not clicked:
                                         raise Exception("点击按钮失败")
-                                    
+
                                     # 先处理弹窗，只有成功时才标记按钮和增加计数
                                     time.sleep(0.5)
-                                    modal_success = self._handle_proposal_modal(selected_tab, template_content)
-                                    
+                                    modal_success = self._handle_proposal_modal(
+                                        selected_tab, template_content
+                                    )
+
                                     if modal_success:
                                         # 弹窗处理成功，增加计数并标记按钮
                                         clicked_count += 1
                                         if self.dry_run:
-                                            logger.info(f"[DRY-RUN] [{clicked_count}/{max_count}] 已处理弹窗（未提交）(类别: {selected_tab})")
-                                            self.console.print(f"[cyan]⚡ [DRY-RUN] [{clicked_count}/{max_count}][/cyan] 已处理弹窗（未提交）[dim](类别: {selected_tab})[/dim]")
+                                            logger.info(
+                                                f"[DRY-RUN] [{clicked_count}/{max_count}] 已处理弹窗（未提交）(类别: {selected_tab})"
+                                            )
+                                            self.console.print(
+                                                f"[cyan]⚡ [DRY-RUN] [{clicked_count}/{max_count}][/cyan] 已处理弹窗（未提交）[dim](类别: {selected_tab})[/dim]"
+                                            )
                                         else:
-                                            logger.info(f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})")
-                                            self.console.print(f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]")
+                                            logger.info(
+                                                f"[{clicked_count}/{max_count}] 已点击 Send Proposal 按钮 (类别: {selected_tab})"
+                                            )
+                                            self.console.print(
+                                                f"[green]✓ [{clicked_count}/{max_count}][/green] 已点击 Send Proposal 按钮 [dim](类别: {selected_tab})[/dim]"
+                                            )
                                         self._mark_button_state(btn, self.clicked_attr)
                                         if pending_batch_buttons > 0:
-                                            pending_batch_buttons = max(pending_batch_buttons - 1, 0)
+                                            pending_batch_buttons = max(
+                                                pending_batch_buttons - 1, 0
+                                            )
                                         if pending_batch_buttons == 0:
                                             should_scroll_after_batch = True
                                     else:
                                         # 弹窗处理失败，记录警告但不标记按钮
-                                        logger.warning(f"弹窗处理失败，跳过此按钮 (类别: {selected_tab})")
-                                        self.console.print(f"[yellow]⚠ 弹窗处理失败，跳过此按钮 (类别: {selected_tab})[/yellow]")
+                                        logger.warning(
+                                            f"弹窗处理失败，跳过此按钮 (类别: {selected_tab})"
+                                        )
+                                        self.console.print(
+                                            f"[yellow]⚠ 弹窗处理失败，跳过此按钮 (类别: {selected_tab})[/yellow]"
+                                        )
                                         # 不增加计数，不标记按钮，继续处理下一个按钮
-                                    
+
                                     break
                                 except Exception as e:
                                     error_msg = str(e).lower()
-                                    if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                                    if (
+                                        "disconnect" in error_msg
+                                        or "context" in error_msg
+                                        or "target closed" in error_msg
+                                    ):
                                         raise
                                     if retry_idx < 9:
                                         parent = parent.parent()
@@ -642,9 +725,16 @@ class ProposalSender:
                                 break
                     except Exception as e:
                         error_msg = str(e).lower()
-                        if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg or 'no such' in error_msg:
+                        if (
+                            "disconnect" in error_msg
+                            or "context" in error_msg
+                            or "target closed" in error_msg
+                            or "no such" in error_msg
+                        ):
                             logger.warning(f"页面可能已刷新: {e}")
-                            self.console.print("[yellow]⚠ 页面可能已刷新，尝试重连...[/yellow]")
+                            self.console.print(
+                                "[yellow]⚠ 页面可能已刷新，尝试重连...[/yellow]"
+                            )
                             consecutive_errors += 1
                             break
                         else:
@@ -654,14 +744,16 @@ class ProposalSender:
                             )
                             self.console.print(f"[red]✗ 点击按钮时出错: {e}[/red]")
                         continue
-                
+
                 if clicked_count >= max_count:
                     break
-                
+
                 if should_scroll_after_batch:
                     # 检查滚动进度（防卡顿机制）
-                    scroll_check = self._check_scroll_progress(len(send_proposal_buttons))
-                    if scroll_check['is_stuck']:
+                    scroll_check = self._check_scroll_progress(
+                        len(send_proposal_buttons)
+                    )
+                    if scroll_check["is_stuck"]:
                         logger.warning(
                             f"批次后滚动检测到卡顿：{scroll_check['details']}，"
                             f"提前退出（已发送 {clicked_count}/{max_count}）"
@@ -671,7 +763,7 @@ class ProposalSender:
                             f"已发送 {clicked_count}/{max_count} 个。[/yellow]\n"
                         )
                         break
-                    
+
                     if not self.browser.scroll_down(500):
                         consecutive_errors += 1
                         continue
@@ -688,7 +780,7 @@ class ProposalSender:
 
                 # 检查滚动进度（防卡顿机制）
                 scroll_check = self._check_scroll_progress(len(send_proposal_buttons))
-                if scroll_check['is_stuck']:
+                if scroll_check["is_stuck"]:
                     logger.warning(
                         f"常规滚动检测到卡顿：{scroll_check['details']}，"
                         f"提前退出（已发送 {clicked_count}/{max_count}）"
@@ -704,11 +796,17 @@ class ProposalSender:
                     continue
                 time.sleep(self.scroll_delay)
                 total_scrolls += 1
-                self.console.print(f"[dim]滚动第 {total_scrolls} 次，已发送 {clicked_count}/{max_count} 个[/dim]")
-                
+                self.console.print(
+                    f"[dim]滚动第 {total_scrolls} 次，已发送 {clicked_count}/{max_count} 个[/dim]"
+                )
+
             except Exception as e:
                 error_msg = str(e).lower()
-                if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                if (
+                    "disconnect" in error_msg
+                    or "context" in error_msg
+                    or "target closed" in error_msg
+                ):
                     logger.warning(f"检测到页面断开: {e}")
                     consecutive_errors += 1
                 else:
@@ -717,12 +815,14 @@ class ProposalSender:
                         f"滚动次数: {total_scrolls}, 连续错误: {consecutive_errors}, "
                         f"空滚动: {empty_scrolls}, 待发送计数: {pending_batch_buttons}）"
                     )
-                    if 'template_term_not_found' in error_msg:
+                    if "template_term_not_found" in error_msg:
                         raise
                     consecutive_errors += 1
-        
+
         logger.info(f"发送完成，共发送 {clicked_count} 个 Send Proposal")
-        self.console.print(f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]")
+        self.console.print(
+            f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]"
+        )
         return SendProposalsResult(
             clicked_count=clicked_count,
             completed_all=(clicked_count >= max_count),
@@ -744,7 +844,7 @@ class ProposalSender:
             skip_names: 需要跳过的 Creator 名称集合（已发送过的）。
 
         Returns:
-            (success, name, psi, skipped): 
+            (success, name, psi, skipped):
             - 成功返回 (True, name, psi_id, False)
             - 跳过返回 (False, name, psi_id, True)
             - 失败返回 (False, name, psi_id, False)
@@ -778,24 +878,26 @@ class ProposalSender:
             time.sleep(0.2)
             row_el.click(by_js=True)
             time.sleep(0.5)
-            
+
             # 提取 Creator 名称和 psi ID
             creator_name = self._extract_creator_name(row_el)
             psi_id = self._extract_creator_psi()
-            
+
             # 检查是否需要跳过（已发送过）
             if skip_names and creator_name and creator_name in skip_names:
                 logger.info(f"第 {row_index} 行 [{creator_name}] 已发送过，跳过")
                 return False, creator_name, psi_id, True  # 跳过
-            
+
             # 点击行后出现的 Send Proposal 按钮：优先按文本查找并点击
             send_btn = self.browser.find_element("text:Send Proposal", timeout=10)
             if not send_btn:
-                buttons = self.browser.find_elements('css:button[data-testid="uicl-button"]')
+                buttons = self.browser.find_elements(
+                    'css:button[data-testid="uicl-button"]'
+                )
                 for btn in buttons or []:
                     if not btn:
                         continue
-                    if 'Send Proposal' in (btn.text or ''):
+                    if "Send Proposal" in (btn.text or ""):
                         send_btn = btn
                         break
             if not send_btn:
@@ -808,21 +910,34 @@ class ProposalSender:
                 time.sleep(0.2)
             send_btn.click(by_js=True)
             time.sleep(0.5)
-            modal_success = self._handle_proposal_modal(selected_tab=None, template_content=template_content or "")
-            
+            modal_success = self._handle_proposal_modal(
+                selected_tab=None, template_content=template_content or ""
+            )
+
             # 检测发送成功消息
             if modal_success:
                 success_confirmed = self._wait_for_success_message()
                 if success_confirmed:
-                    logger.info(f"第 {row_index} 行 Creator [{creator_name}] (psi={psi_id}) 发送成功")
+                    logger.info(
+                        f"第 {row_index} 行 Creator [{creator_name}] (psi={psi_id}) 发送成功"
+                    )
                     return True, creator_name, psi_id, False
                 else:
                     logger.warning(f"第 {row_index} 行未检测到成功消息")
-                    return True, creator_name, psi_id, False  # 弹窗处理成功但未检测到消息
+                    return (
+                        True,
+                        creator_name,
+                        psi_id,
+                        False,
+                    )  # 弹窗处理成功但未检测到消息
             return False, creator_name, psi_id, False
         except Exception as e:
             error_msg = str(e).lower()
-            if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+            if (
+                "disconnect" in error_msg
+                or "context" in error_msg
+                or "target closed" in error_msg
+            ):
                 raise
             logger.error(f"按表格行发送失败: {e}")
             self.console.print(f"[red]按表格行发送失败: {e}[/red]")
@@ -834,22 +949,22 @@ class ProposalSender:
             # 方法1：从表格行本身提取（优先）
             if row_el:
                 # 查找行内的链接或标题文本
-                link = row_el.ele('tag:a', timeout=0.2)
+                link = row_el.ele("tag:a", timeout=0.2)
                 if link:
-                    name = (link.text or '').strip()
+                    name = (link.text or "").strip()
                     # 过滤掉太短或不像名字的文本
-                    if name and len(name) > 1 and not name.startswith('http'):
+                    if name and len(name) > 1 and not name.startswith("http"):
                         logger.debug(f"从表格行提取到 Creator 名称: {name}")
                         return name
                 # 查找行内第一个有意义的文本
-                for sel in ['css:[class*="name"]', 'css:span', 'css:div']:
+                for sel in ['css:[class*="name"]', "css:span", "css:div"]:
                     el = row_el.ele(sel, timeout=0.1)
                     if el:
-                        name = (el.text or '').strip()
+                        name = (el.text or "").strip()
                         if name and len(name) > 2 and len(name) < 100:
                             logger.debug(f"从表格行提取到 Creator 名称: {name}")
                             return name
-            
+
             # 方法2：等待侧边栏加载后从标题提取
             time.sleep(0.3)  # 等待侧边栏更新
             selectors = [
@@ -866,26 +981,26 @@ class ProposalSender:
             for sel in selectors:
                 el = self.browser.find_element(sel, timeout=0.3)
                 if el:
-                    name = (el.text or '').strip()
+                    name = (el.text or "").strip()
                     if name and len(name) > 1:
                         logger.debug(f"提取到 Creator 名称: {name}")
                         return name
-            
+
             # 方法3：从 Send Proposal 按钮附近查找
             send_btn = self.browser.find_element("text:Send Proposal", timeout=0.3)
             if send_btn:
                 parent = send_btn.parent()
                 for _ in range(5):
                     if parent:
-                        for tag in ['h1', 'h2', 'h3']:
-                            header = parent.ele(f'tag:{tag}', timeout=0.1)
+                        for tag in ["h1", "h2", "h3"]:
+                            header = parent.ele(f"tag:{tag}", timeout=0.1)
                             if header:
-                                name = (header.text or '').strip()
+                                name = (header.text or "").strip()
                                 if name and len(name) > 1:
                                     logger.debug(f"提取到 Creator 名称: {name}")
                                     return name
                         parent = parent.parent()
-                        
+
         except Exception as e:
             logger.debug(f"提取 Creator 名称失败: {e}")
         return None
@@ -895,32 +1010,39 @@ class ProposalSender:
         try:
             # 尝试从 URL 或页面元素中提取 psi
             # 方法1：从侧边栏的链接中提取
-            slideout = self.browser.find_element('css:[class*="slideout"], [class*="detail"], [class*="panel"]', timeout=1)
+            slideout = self.browser.find_element(
+                'css:[class*="slideout"], [class*="detail"], [class*="panel"]',
+                timeout=1,
+            )
             if slideout:
                 # 查找包含 psi 的链接或属性
-                links = slideout.eles('tag:a', timeout=0.5)
+                links = slideout.eles("tag:a", timeout=0.5)
                 for link in links or []:
-                    href = link.attr('href') or ''
-                    if 'psi=' in href:
+                    href = link.attr("href") or ""
+                    if "psi=" in href:
                         import re
-                        match = re.search(r'psi=([a-f0-9-]+)', href)
+
+                        match = re.search(r"psi=([a-f0-9-]+)", href)
                         if match:
                             return match.group(1)
-            
+
             # 方法2：从 iframe src 中提取
             iframe = self.browser.find_element('css:iframe[src*="psi="]', timeout=0.5)
             if iframe:
-                src = iframe.attr('src') or ''
+                src = iframe.attr("src") or ""
                 import re
-                match = re.search(r'psi=([a-f0-9-]+)', src)
+
+                match = re.search(r"psi=([a-f0-9-]+)", src)
                 if match:
                     return match.group(1)
-            
+
             # 方法3：从页面上的隐藏元素或 data 属性提取
-            psi_el = self.browser.find_element('css:[data-psi], [data-partner-id]', timeout=0.5)
+            psi_el = self.browser.find_element(
+                "css:[data-psi], [data-partner-id]", timeout=0.5
+            )
             if psi_el:
-                return psi_el.attr('data-psi') or psi_el.attr('data-partner-id')
-                
+                return psi_el.attr("data-psi") or psi_el.attr("data-partner-id")
+
         except Exception as e:
             logger.debug(f"提取 psi 失败: {e}")
         return None
@@ -930,7 +1052,9 @@ class ProposalSender:
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                success_el = self.browser.find_element('text:Proposal sent successfully', timeout=0.5)
+                success_el = self.browser.find_element(
+                    "text:Proposal sent successfully", timeout=0.5
+                )
                 if success_el:
                     logger.info("检测到发送成功消息")
                     time.sleep(0.5)  # 等待消息显示完成
@@ -949,12 +1073,12 @@ class ProposalSender:
         """
         Creator Search 批量发送：从指定行开始，依次发送 Proposal。
         用 name 来区分已发送的 Creator，避免重复发送。
-        
+
         Args:
             max_count: 最大发送数量
             start_row: 起始行号（从 1 开始）
             template_content: 留言模板内容
-            
+
         Returns:
             SendProposalsResult: 发送结果
         """
@@ -962,95 +1086,121 @@ class ProposalSender:
         self.clear_stop_request()
         if template_content is None:
             template_content = self.template_manager.get_active_template()
-        
+
         # 加载已发送的 name 列表
         sent_names = self._load_sent_names()
         if sent_names:
-            self.console.print(f"[dim]已加载 {len(sent_names)} 个已发送的 Creator 记录[/dim]")
-        
+            self.console.print(
+                f"[dim]已加载 {len(sent_names)} 个已发送的 Creator 记录[/dim]"
+            )
+
         sent_count = 0
         sent_records: list[dict] = []  # 记录已发送的 Creator
         skipped_count = 0  # 跳过的重复 Creator 数量
         current_row = start_row
         consecutive_errors = 0
         max_consecutive_errors = 3
-        
-        self.console.print(f"\n[bold cyan]开始 Creator Search 批量发送 (目标: {max_count} 个，起始行: {start_row})...[/bold cyan]")
+
+        self.console.print(
+            f"\n[bold cyan]开始 Creator Search 批量发送 (目标: {max_count} 个，起始行: {start_row})...[/bold cyan]"
+        )
 
         # 缓存当前日期，保证同一批次内 T+1 一致
         self._cached_today = date.today()
-        logger.info(f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}")
+        logger.info(
+            f"本批次使用日期: T={self._cached_today.isoformat()}, T+1={self._cached_today + timedelta(days=1)}"
+        )
 
         while sent_count < max_count:
             if self._stop_requested:
                 self.console.print("[yellow]检测到停止请求，结束当前发送任务[/yellow]")
-                logger.info(f"Creator Search 任务被请求停止，已发送 {sent_count}/{max_count} 个")
+                logger.info(
+                    f"Creator Search 任务被请求停止，已发送 {sent_count}/{max_count} 个"
+                )
                 break
             if consecutive_errors >= max_consecutive_errors:
-                self.console.print(f"[red]连续 {max_consecutive_errors} 次错误，停止发送[/red]")
-                break
-            
-            self.console.print(f"\n[dim]正在处理第 {current_row} 行...[/dim]")
-            
-            try:
-                success, creator_name, psi_id, was_skipped = self.send_proposal_by_table_row(
-                    current_row, template_content, skip_names=sent_names
+                self.console.print(
+                    f"[red]连续 {max_consecutive_errors} 次错误，停止发送[/red]"
                 )
-                
+                break
+
+            self.console.print(f"\n[dim]正在处理第 {current_row} 行...[/dim]")
+
+            try:
+                success, creator_name, psi_id, was_skipped = (
+                    self.send_proposal_by_table_row(
+                        current_row, template_content, skip_names=sent_names
+                    )
+                )
+
                 # 检查是否被跳过（已发送过）
                 if was_skipped:
-                    self.console.print(f"[yellow][SKIP] 第 {current_row} 行 [{creator_name}] 已发送过，跳过[/yellow]")
+                    self.console.print(
+                        f"[yellow][SKIP] 第 {current_row} 行 [{creator_name}] 已发送过，跳过[/yellow]"
+                    )
                     skipped_count += 1
                     current_row += 1
                     self._close_creator_slideout()
                     time.sleep(0.3)
                     continue
-                
+
                 if success:
                     sent_count += 1
                     consecutive_errors = 0
                     record = {
-                        'row': current_row,
-                        'name': creator_name,
-                        'psi': psi_id,
-                        'status': 'success',
-                        'timestamp': datetime.now().isoformat(),
+                        "row": current_row,
+                        "name": creator_name,
+                        "psi": psi_id,
+                        "status": "success",
+                        "timestamp": datetime.now().isoformat(),
                     }
                     sent_records.append(record)
                     # 添加到已发送列表
                     if creator_name:
                         sent_names.add(creator_name)
-                    
-                    self.console.print(f"[green][OK] [{sent_count}/{max_count}] 第 {current_row} 行 [{creator_name or '未知'}] 发送成功[/green]")
-                    logger.info(f"发送成功: row={current_row}, name={creator_name}, psi={psi_id}")
-                    
+
+                    self.console.print(
+                        f"[green][OK] [{sent_count}/{max_count}] 第 {current_row} 行 [{creator_name or '未知'}] 发送成功[/green]"
+                    )
+                    logger.info(
+                        f"发送成功: row={current_row}, name={creator_name}, psi={psi_id}"
+                    )
+
                     # 关闭侧边栏（如果有的话），准备下一个
                     self._close_creator_slideout()
                 else:
                     consecutive_errors += 1
-                    self.console.print(f"[yellow][SKIP] 第 {current_row} 行 [{creator_name or '未知'}] 发送失败，跳过[/yellow]")
-                
+                    self.console.print(
+                        f"[yellow][SKIP] 第 {current_row} 行 [{creator_name or '未知'}] 发送失败，跳过[/yellow]"
+                    )
+
                 current_row += 1
                 time.sleep(0.5)  # 短暂等待页面稳定
-                
+
             except Exception as e:
                 error_msg = str(e).lower()
-                if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+                if (
+                    "disconnect" in error_msg
+                    or "context" in error_msg
+                    or "target closed" in error_msg
+                ):
                     raise
                 consecutive_errors += 1
                 logger.error(f"处理第 {current_row} 行时出错: {e}")
                 self.console.print(f"[red][ERR] 第 {current_row} 行出错: {e}[/red]")
                 current_row += 1
-        
+
         # 保存发送记录
         self._save_sent_records(sent_records)
-        
+
         if skipped_count > 0:
             self.console.print(f"[dim]跳过了 {skipped_count} 个已发送的 Creator[/dim]")
-        
-        self.console.print(f"\n[bold cyan]===== 完成！共发送了 {sent_count} 个 Proposal =====[/bold cyan]")
+
+        self.console.print(
+            f"\n[bold cyan]===== 完成！共发送了 {sent_count} 个 Proposal =====[/bold cyan]"
+        )
         logger.info(f"Creator Search 批量发送完成，共发送 {sent_count} 个")
-        
+
         return SendProposalsResult(
             clicked_count=sent_count,
             completed_all=(sent_count >= max_count),
@@ -1060,15 +1210,18 @@ class ProposalSender:
         """关闭 Creator 详情侧边栏"""
         try:
             # 尝试点击关闭按钮
-            close_btn = self.browser.find_element('css:button[aria-label="Close"], button[class*="close"], [class*="slideout"] button[class*="close"]', timeout=0.5)
+            close_btn = self.browser.find_element(
+                'css:button[aria-label="Close"], button[class*="close"], [class*="slideout"] button[class*="close"]',
+                timeout=0.5,
+            )
             if close_btn:
                 close_btn.click(by_js=True)
                 time.sleep(0.3)
                 return
-            
+
             # 尝试按 ESC
             try:
-                self.browser.tab.actions.key_down('Escape').key_up('Escape').perform()
+                self.browser.tab.actions.key_down("Escape").key_up("Escape").perform()
                 time.sleep(0.3)
             except Exception:
                 pass
@@ -1081,15 +1234,18 @@ class ProposalSender:
             return
         try:
             import json
-            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+
+            log_dir = os.path.join(os.path.dirname(__file__), "logs")
             os.makedirs(log_dir, exist_ok=True)
-            
-            filename = f"creator_search_sent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+            filename = (
+                f"creator_search_sent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
             filepath = os.path.join(log_dir, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
+
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
-            
+
             logger.info(f"发送记录已保存到: {filepath}")
             self.console.print(f"[dim]发送记录已保存到: {filename}[/dim]")
         except Exception as e:
@@ -1101,23 +1257,24 @@ class ProposalSender:
         try:
             import json
             import glob
-            log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+
+            log_dir = os.path.join(os.path.dirname(__file__), "logs")
             if not os.path.exists(log_dir):
                 return sent_names
-            
+
             # 读取所有 creator_search_sent_*.json 文件
-            pattern = os.path.join(log_dir, 'creator_search_sent_*.json')
+            pattern = os.path.join(log_dir, "creator_search_sent_*.json")
             for filepath in glob.glob(pattern):
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
+                    with open(filepath, "r", encoding="utf-8") as f:
                         records = json.load(f)
                         for record in records:
-                            name = record.get('name')
+                            name = record.get("name")
                             if name:
                                 sent_names.add(name)
                 except Exception as e:
                     logger.debug(f"读取记录文件失败 {filepath}: {e}")
-            
+
             logger.debug(f"已加载 {len(sent_names)} 个已发送的 Creator 名称")
         except Exception as e:
             logger.warning(f"加载已发送记录失败: {e}")
@@ -1129,29 +1286,46 @@ class ProposalSender:
             parent = btn.parent()
             for _ in range(20):
                 if parent:
-                    selected_tab_ele = self.browser.find_element('css:.selected-tab', timeout=0.1, parent=parent)
+                    selected_tab_ele = self.browser.find_element(
+                        "css:.selected-tab", timeout=0.1, parent=parent
+                    )
                     if selected_tab_ele:
                         return selected_tab_ele.text.strip()
                     parent = parent.parent()
                 else:
                     break
-            
+
             # 备用方案
-            selected_tab_ele = self.browser.find_element('css:.selected-tab', timeout=0.5)
+            selected_tab_ele = self.browser.find_element(
+                "css:.selected-tab", timeout=0.5
+            )
             if selected_tab_ele:
                 return selected_tab_ele.text.strip()
         except Exception as e:
             logger.error(f"获取 selected-tab 失败: {e}")
         return None
-    
-    def _handle_proposal_modal(self, selected_tab: str | None = None, template_content: str = "") -> bool:
+
+    def _handle_proposal_modal(
+        self, selected_tab: str | None = None, template_content: str = ""
+    ) -> bool:
         """处理 Proposal 弹窗"""
         try:
             iframe = self._wait_for_modal_iframe()
             if not iframe:
-                logger.warning(f"未找到弹窗 iframe (类别: {selected_tab or '未知'})，可能弹窗加载超时")
+                logger.warning(
+                    f"未找到弹窗 iframe (类别: {selected_tab or '未知'})，可能弹窗加载超时"
+                )
                 return False
-            
+
+            # 先检查 template_term 是否有有效值
+            if not self.template_term or not str(self.template_term).strip():
+                error_msg = (
+                    f"Template Term 未配置（当前值: '{self.template_term}'）\n"
+                    "请在开始发送前通过确认弹窗选择 Template Term。"
+                )
+                logger.error(error_msg)
+                raise TemplateTermNotConfiguredError(error_msg)
+
             ok = self._select_template_term(iframe, self.template_term)
             if not ok:
                 raise RuntimeError(f"template_term_not_found: {self.template_term}")
@@ -1164,10 +1338,14 @@ class ProposalSender:
 
             self._submit_proposal(iframe)
             return True
-            
+
         except Exception as e:
             error_msg = str(e).lower()
-            if 'disconnect' in error_msg or 'context' in error_msg or 'target closed' in error_msg:
+            if (
+                "disconnect" in error_msg
+                or "context" in error_msg
+                or "target closed" in error_msg
+            ):
                 logger.warning(f"处理弹窗时页面断开: {e}")
                 raise
             logger.error(f"处理弹窗失败: {e}")
@@ -1187,24 +1365,27 @@ class ProposalSender:
 
         # 日期按钮：data-testid="uicl-date-input"
         try:
-            data_testid = (ele.attr('data-testid') or '').strip().lower()
-            if data_testid == 'uicl-date-input':
+            data_testid = (ele.attr("data-testid") or "").strip().lower()
+            if data_testid == "uicl-date-input":
                 return True
         except Exception:
             pass
 
         # aria-label 含 date/calendar
         try:
-            aria_label = (ele.attr('aria-label') or '').strip().lower()
-            if 'date' in aria_label or 'calendar' in aria_label:
+            aria_label = (ele.attr("aria-label") or "").strip().lower()
+            if "date" in aria_label or "calendar" in aria_label:
                 return True
         except Exception:
             pass
 
         # 文本内容形如日期格式（例如 "May 8, 2026"）
         try:
-            text = re.sub(r'\s+', ' ', (ele.text or '').strip())
-            if re.match(r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$', text):
+            text = re.sub(r"\s+", " ", (ele.text or "").strip())
+            if re.match(
+                r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$",
+                text,
+            ):
                 return True
         except Exception:
             pass
@@ -1216,11 +1397,11 @@ class ProposalSender:
             for _ in range(6):
                 if not cur:
                     break
-                cls = (cur.attr('class') or '')
-                if 'standard-date-time-input' in cls:
+                cls = cur.attr("class") or ""
+                if "standard-date-time-input" in cls:
                     return True
                 # 到达 iui-form-section 层级就停止向上检查，避免误判
-                if 'iui-form-section' in cls:
+                if "iui-form-section" in cls:
                     break
                 cur = cur.parent()
         except Exception:
@@ -1248,13 +1429,15 @@ class ProposalSender:
                 for _ in range(3):
                     if not cur:
                         break
-                    if (cur.attr('data-testid') or '') == 'uicl-multiselect-input':
+                    if (cur.attr("data-testid") or "") == "uicl-multiselect-input":
                         trigger = cur.ele(
                             'css:button[data-testid="uicl-multi-select-input-button"]',
                             timeout=0.3,
                         )
                         if trigger and not self._is_date_like_trigger(trigger):
-                            logger.debug("Template Term 触发器：通过 input[name=insertionOrderId] 定位")
+                            logger.debug(
+                                "Template Term 触发器：通过 input[name=insertionOrderId] 定位"
+                            )
                             return trigger
                         break
                     cur = cur.parent()
@@ -1265,7 +1448,7 @@ class ProposalSender:
         # 真实 DOM：Template Term 的 field-label-pair class 含 "select-input"
         # Contract Dates 的 field-label-pair class 含 "standard-date-time-input"，不会被误选
         try:
-            term_label = iframe.ele('text:Template Term', timeout=2)
+            term_label = iframe.ele("text:Template Term", timeout=2)
             if not term_label:
                 logger.debug("未找到 Template Term 标签")
                 return None
@@ -1275,8 +1458,8 @@ class ProposalSender:
             for _ in range(5):
                 if not cur:
                     break
-                cls = (cur.attr('class') or '')
-                if 'iui-form-section' in cls:
+                cls = cur.attr("class") or ""
+                if "iui-form-section" in cls:
                     # 只在含 "select-input" 的 field-label-pair 内查找（排除日期时间字段）
                     try:
                         field = cur.ele(
@@ -1291,7 +1474,9 @@ class ProposalSender:
                             timeout=0.3,
                         )
                         if trigger and not self._is_date_like_trigger(trigger):
-                            logger.debug("Template Term 触发器：通过 iui-form-section > select-input 定位")
+                            logger.debug(
+                                "Template Term 触发器：通过 iui-form-section > select-input 定位"
+                            )
                             return trigger
                     break
                 cur = cur.parent()
@@ -1323,11 +1508,15 @@ class ProposalSender:
         """
         try:
             result = iframe.run_js(js_find_visible)
-            if result == 'found':
-                dropdown = iframe.ele('css:[data-rpa-visible-dropdown="true"]', timeout=1)
+            if result == "found":
+                dropdown = iframe.ele(
+                    'css:[data-rpa-visible-dropdown="true"]', timeout=1
+                )
                 if dropdown:
                     try:
-                        dropdown.run_js('this.removeAttribute("data-rpa-visible-dropdown");')
+                        dropdown.run_js(
+                            'this.removeAttribute("data-rpa-visible-dropdown");'
+                        )
                     except Exception:
                         pass
         except Exception:
@@ -1345,7 +1534,7 @@ class ProposalSender:
             try:
                 rect_js = "var r = this.getBoundingClientRect(); var s = window.getComputedStyle(this); return JSON.stringify({w: r.width, h: r.height, d: s.display});"
                 data = json.loads(dd.run_js(rect_js))
-                if data['w'] > 0 and data['h'] > 0 and data['d'] != 'none':
+                if data["w"] > 0 and data["h"] > 0 and data["d"] != "none":
                     return dd
             except Exception:
                 continue
@@ -1369,7 +1558,7 @@ class ProposalSender:
 
         time.sleep(0.2)
         return self._get_visible_template_term_dropdown(iframe)
-    
+
     def get_template_term_options(self, iframe) -> list[str]:
         """菜单层可调用的公开方法，替代跨层访问私有方法。"""
         return self._get_template_term_options(iframe)
@@ -1377,10 +1566,10 @@ class ProposalSender:
     def _get_template_term_options(self, iframe) -> list[str]:
         """
         获取 Template Term 下拉框的所有选项值
-        
+
         Args:
             iframe: iframe 对象
-            
+
         Returns:
             list[str]: 选项文本列表，如果失败则返回空列表
         """
@@ -1390,62 +1579,90 @@ class ProposalSender:
             if not dropdown:
                 logger.debug("未能安全打开 Template Term 下拉框，返回空选项列表")
                 return []
-            
+
             if dropdown:
                 # 先尝试获取 li[@role="option"] 元素
                 items = dropdown.eles('xpath:.//li[@role="option"]')
                 for it in items or []:
-                    txt = it.text or ''
+                    txt = it.text or ""
                     if txt.strip():
                         options_list.append(txt.strip())
-                
+
                 # 如果没有找到，尝试获取 div.text-ellipsis 元素
                 if not options_list:
-                    nodes = dropdown.eles('css:div.text-ellipsis')
+                    nodes = dropdown.eles("css:div.text-ellipsis")
                     for it in nodes or []:
-                        txt = it.text or ''
+                        txt = it.text or ""
                         if txt.strip():
                             options_list.append(txt.strip())
-            
+
             # 如果还是没有找到，尝试从 select 元素获取
             if not options_list:
-                term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
+                term_dropdown = iframe.ele(
+                    'css:select[data-testid="uicl-select"]', timeout=2
+                )
                 if term_dropdown:
                     try:
-                        option_elements = term_dropdown.eles('css:option')
+                        option_elements = term_dropdown.eles("css:option")
                         for opt in option_elements or []:
-                            txt = opt.text or opt.attr('value') or ''
+                            txt = opt.text or opt.attr("value") or ""
                             if txt.strip():
                                 options_list.append(txt.strip())
                     except Exception:
                         pass
-            
+
             # 去重并保持顺序：仅按显示文本去重，保留 "(1)/(2)" 这类明确区分值
             seen = set()
             unique_options = []
             for opt in options_list:
-                norm = re.sub(r'\s+', ' ', opt).strip().lower()
+                norm = re.sub(r"\s+", " ", opt).strip().lower()
                 if norm not in seen:
                     seen.add(norm)
                     unique_options.append(opt)
 
             return unique_options
-            
+
         except Exception as e:
             logger.error(f"获取 Template Term 选项失败: {e}")
             return []
 
-    def _select_template_term(self, iframe, term_text: str = "Commission Tier Terms") -> bool:
-        """选择 Template Term"""
+    def _select_template_term(self, iframe, term_text: str | None = None) -> bool:
+        """选择 Template Term
+
+        Args:
+            iframe: iframe 对象
+            term_text: 要选择的 Template Term 文本。如果为 None、空字符串或未定义，
+                       则抛出 TemplateTermNotConfiguredError。
+
+        Returns:
+            bool: 选择成功返回 True，失败返回 False
+
+        Raises:
+            TemplateTermNotConfiguredError: 当 term_text 为空、未定义或不存在时抛出
+        """
+        # ── 空值检查：确保 term_text 有有效值 ──
+        if not term_text or not str(term_text).strip():
+            error_msg = (
+                "Template Term 未配置！\n"
+                "当前 settings.template_term 为空或未定义。\n"
+                "请在开始发送前通过确认弹窗选择 Template Term。"
+            )
+            logger.error(error_msg)
+            raise TemplateTermNotConfiguredError(error_msg)
+
         try:
             desired = (term_text or "Commission Tier Terms").strip()
-            desired_norm = re.sub(r'\s+', ' ', desired).strip().lower()
-            logger.debug(f"匹配 Template Term: desired='{desired}', desired_norm='{desired_norm}'")
+            desired_norm = re.sub(r"\s+", " ", desired).strip().lower()
+            logger.debug(
+                f"匹配 Template Term: desired='{desired}', desired_norm='{desired_norm}'"
+            )
             term_sim_threshold = 0.72
             term_sim_tie_eps = 0.005
 
-            term_dropdown = iframe.ele('css:select[data-testid="uicl-select"]', timeout=2)
-            
+            term_dropdown = iframe.ele(
+                'css:select[data-testid="uicl-select"]', timeout=2
+            )
+
             if term_dropdown:
                 try:
                     term_dropdown.select(desired)
@@ -1453,7 +1670,9 @@ class ProposalSender:
                     time.sleep(0.3)
                     return True
                 except Exception as e:
-                    logger.warning(f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}")
+                    logger.warning(
+                        f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}"
+                    )
 
             dropdown = self._open_template_term_dropdown(iframe)
 
@@ -1462,19 +1681,19 @@ class ProposalSender:
                 # 优先从 listbox 中获取选项
                 listbox = dropdown.ele('css:ul[role="listbox"]', timeout=0.5)
                 if listbox:
-                    items = listbox.eles('css:li')
+                    items = listbox.eles("css:li")
                 else:
                     items = dropdown.eles('xpath:.//li[@role="option"]')
 
                 for it in items or []:
-                    txt = it.text or ''
-                    txtn = re.sub(r'\s+', ' ', txt).strip().lower()
+                    txt = it.text or ""
+                    txtn = re.sub(r"\s+", " ", txt).strip().lower()
                     options.append((txt, txtn, it))
                 if not options:
-                    nodes = dropdown.eles('css:div.text-ellipsis')
+                    nodes = dropdown.eles("css:div.text-ellipsis")
                     for it in nodes or []:
-                        txt = it.text or ''
-                        txtn = re.sub(r'\s+', ' ', txt).strip().lower()
+                        txt = it.text or ""
+                        txtn = re.sub(r"\s+", " ", txt).strip().lower()
                         options.append((txt, txtn, it))
 
                 # 去重：避免 DOM 中相同显示文本的重复节点，但保留 "(1)/(2)" 这类明确值
@@ -1485,9 +1704,13 @@ class ProposalSender:
                         seen_norm.add(txtn)
                         unique_options.append((txt, txtn, ele))
                 options = unique_options
-                logger.debug(f"找到 {len(options)} 个唯一 Template Term 选项: {[txt for txt, _, _ in options]}")
+                logger.debug(
+                    f"找到 {len(options)} 个唯一 Template Term 选项: {[txt for txt, _, _ in options]}"
+                )
 
-                def _click_term_row(elem, picked_label: str, persist_choice: bool = False) -> bool:
+                def _click_term_row(
+                    elem, picked_label: str, persist_choice: bool = False
+                ) -> bool:
                     try:
                         elem.wait.clickable()
                     except Exception:
@@ -1498,7 +1721,7 @@ class ProposalSender:
                         elem.click(by_js=True)
                     if persist_choice:
                         settings = self.config.load_settings()
-                        settings['template_term'] = picked_label
+                        settings["template_term"] = picked_label
                         self.config.save_settings(settings)
                         self.template_term = picked_label
                     logger.info(f"已选择 Template Term: {picked_label}")
@@ -1508,7 +1731,9 @@ class ProposalSender:
                 def _ask_choice(total: int):
                     sel = questionary.text(
                         "请输入编号:",
-                        validate=lambda x: x.isdigit() and 1 <= int(x) <= total or "请输入有效编号",
+                        validate=lambda x: (
+                            x.isdigit() and 1 <= int(x) <= total or "请输入有效编号"
+                        ),
                     ).ask()
                     if sel and sel.isdigit():
                         return int(sel) - 1
@@ -1527,26 +1752,35 @@ class ProposalSender:
                     return _click_term_row(element, persist_label, persist_choice=True)
 
                 scored = [
-                    (SequenceMatcher(None, desired_norm, n).ratio(), t, e) for (t, n, e) in options
+                    (SequenceMatcher(None, desired_norm, n).ratio(), t, e)
+                    for (t, n, e) in options
                 ]
                 scored.sort(key=lambda x: -x[0])
                 best_score = scored[0][0] if scored else 0.0
-                logger.debug(f"Template Term 相似度得分: {[(t, f'{score:.3f}') for score, t, _ in scored]}")
+                logger.debug(
+                    f"Template Term 相似度得分: {[(t, f'{score:.3f}') for score, t, _ in scored]}"
+                )
                 logger.debug(f"最佳得分: {best_score:.3f}, 阈值: {term_sim_threshold}")
                 if best_score >= term_sim_threshold:
                     top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
-                    logger.debug(f"匹配成功，最佳得分 {best_score:.3f} ≥ 阈值 {term_sim_threshold}，找到 {len(top)} 个候选项")
+                    logger.debug(
+                        f"匹配成功，最佳得分 {best_score:.3f} ≥ 阈值 {term_sim_threshold}，找到 {len(top)} 个候选项"
+                    )
                     if len(top) == 1:
                         return _click_term_row(top[0][2], top[0][1])
                     top_candidates = [
                         (f"{t}  [dim](相似度 {best_score:.2f})[/dim]", e, t)
                         for (_, t, e) in top
                     ]
-                    if _prompt_and_pick(top_candidates, "\n[bold]多个相似候选项，请选择：[/bold]"):
+                    if _prompt_and_pick(
+                        top_candidates, "\n[bold]多个相似候选项，请选择：[/bold]"
+                    ):
                         return True
                     return False
 
-                logger.debug(f"匹配失败，最佳得分 {best_score:.3f} < 阈值 {term_sim_threshold}")
+                logger.debug(
+                    f"匹配失败，最佳得分 {best_score:.3f} < 阈值 {term_sim_threshold}"
+                )
                 if options:
                     self.console.print(
                         f"\n[bold]未匹配到配置项（最高相似度 {best_score:.2f}，需 ≥{term_sim_threshold:.2f}），"
@@ -1556,20 +1790,20 @@ class ProposalSender:
                     if _prompt_and_pick(all_candidates, ""):
                         return True
                     return False
-            
+
             logger.debug("未找到 Template Term 下拉框或选项")
             self.console.print("\n[bold]未找到可选项[/bold]")
             return False
-            
+
         except Exception as e:
             logger.error(f"选择 Template Term 失败: {e}")
             return False
-    
+
     def _normalize_partner_group_text(self, text: str) -> str:
         """规范化 Partner Group 文本用于匹配。"""
         raw = text or ""
-        raw = re.sub(r'\s*\(\d+\)\s*$', '', raw)
-        raw = re.sub(r'\s+', '', raw)
+        raw = re.sub(r"\s*\(\d+\)\s*$", "", raw)
+        raw = re.sub(r"\s+", "", raw)
         return raw.strip().lower()
 
     def _calc_text_similarity(self, text1: str, text2: str) -> float:
@@ -1673,8 +1907,8 @@ class ProposalSender:
             'css:li[role="option"]',
             'css:div[role="option"]',
             'css:[class*="Baf2T"]',
-            'xpath://ul/li/div/div',  # 用户提供的 XPath 模式（简化为相对路径）
-            'css:li',
+            "xpath://ul/li/div/div",  # 用户提供的 XPath 模式（简化为相对路径）
+            "css:li",
         ]
         options: list[tuple[str, str, object]] = []
         seen: set[str] = set()
@@ -1685,7 +1919,9 @@ class ProposalSender:
             except Exception:
                 nodes = []
             if self.partner_groups_debug_logging and nodes:
-                logger.info(f"[PartnerGroupsDebug] Selector '{selector}' 找到 {len(nodes)} 个节点")
+                logger.info(
+                    f"[PartnerGroupsDebug] Selector '{selector}' 找到 {len(nodes)} 个节点"
+                )
             for node in nodes or []:
                 try:
                     text = (node.text or "").strip()
@@ -1706,7 +1942,7 @@ class ProposalSender:
         # 取有可见文本的元素作为候选项，按规范化文本+原始文本去重。
         if not options:
             try:
-                nodes = dropdown.eles('xpath:.//*', timeout=0.2)
+                nodes = dropdown.eles("xpath:.//*", timeout=0.2)
             except Exception:
                 nodes = []
             for node in nodes or []:
@@ -1740,7 +1976,9 @@ class ProposalSender:
 
         return options
 
-    def _verify_partner_group_selected(self, iframe, target_norm: str, *, emit_failure_log: bool = False) -> bool:
+    def _verify_partner_group_selected(
+        self, iframe, target_norm: str, *, emit_failure_log: bool = False
+    ) -> bool:
         """
         验证 Partner Group 是否已经被成功选中（尽量避免误判）。
 
@@ -1759,7 +1997,7 @@ class ProposalSender:
             # 优先：新版 tag-input 容器（注意：有些 UI 结构里 .iui-tag-input 可能只是 input-wrap，需要继续向上找）
             for selector in (
                 'css:[data-testid="uicl-tag-input"]',
-                'css:.iui-tag-input',
+                "css:.iui-tag-input",
                 'css:[class*="tag-input"]',
             ):
                 try:
@@ -1772,7 +2010,10 @@ class ProposalSender:
             if not base_container:
                 # 兜底：用 input 的父节点作为容器
                 try:
-                    input_ele = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.8)
+                    input_ele = iframe.ele(
+                        'css:input[data-testid="uicl-tag-input-text-input"]',
+                        timeout=0.8,
+                    )
                     if input_ele:
                         base_container = input_ele.parent()
                 except Exception:
@@ -1780,7 +2021,9 @@ class ProposalSender:
 
             if not base_container:
                 if self.partner_groups_debug_logging and emit_failure_log:
-                    logger.warning("[PartnerGroupsDebug] 未找到 tag 容器，无法验证是否已选中 Partner Group。")
+                    logger.warning(
+                        "[PartnerGroupsDebug] 未找到 tag 容器，无法验证是否已选中 Partner Group。"
+                    )
                 return False
 
             # 收集多个候选容器：base_container + 若干层父节点（以及 input 的父链），避免选到过窄的 input-wrap 导致误判
@@ -1805,7 +2048,9 @@ class ProposalSender:
                     break
 
             try:
-                input_ele2 = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.6)
+                input_ele2 = iframe.ele(
+                    'css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.6
+                )
             except Exception:
                 input_ele2 = None
             if input_ele2:
@@ -1823,14 +2068,14 @@ class ProposalSender:
                     if not cur:
                         break
                     try:
-                        role = (cur.attr('role') or '').strip().lower()
-                        if role in ('option', 'listbox'):
+                        role = (cur.attr("role") or "").strip().lower()
+                        if role in ("option", "listbox"):
                             return True
                     except Exception:
                         pass
                     try:
-                        dtid = (cur.attr('data-testid') or '').strip()
-                        if dtid == 'uicl-tag-input-dropdown':
+                        dtid = (cur.attr("data-testid") or "").strip()
+                        if dtid == "uicl-tag-input-dropdown":
                             return True
                     except Exception:
                         pass
@@ -1844,7 +2089,7 @@ class ProposalSender:
 
             for idx, container in enumerate(containers):
                 try:
-                    nodes = container.eles('xpath:.//*', timeout=0.4)
+                    nodes = container.eles("xpath:.//*", timeout=0.4)
                 except Exception:
                     nodes = []
 
@@ -1867,7 +2112,11 @@ class ProposalSender:
 
                     scanned += 1
                     norm = self._normalize_partner_group_text(text)
-                    if self.partner_groups_debug_logging and emit_failure_log and len(samples) < 20:
+                    if (
+                        self.partner_groups_debug_logging
+                        and emit_failure_log
+                        and len(samples) < 20
+                    ):
                         samples.append(f"{text} -> {norm}")
 
                     # 优先完全匹配
@@ -1893,9 +2142,9 @@ class ProposalSender:
                 if matched_text is not None:
                     if self.partner_groups_debug_logging:
                         try:
-                            cls = (container.attr('class') or '').strip()
+                            cls = (container.attr("class") or "").strip()
                         except Exception:
-                            cls = ''
+                            cls = ""
                         logger.info(
                             f"[PartnerGroupsDebug] 验证成功，在候选容器#{idx}找到目标: 原始文本='{matched_text}', "
                             f"target_norm='{target_norm}', container_class='{cls}'"
@@ -1904,9 +2153,9 @@ class ProposalSender:
 
                 if emit_failure_log:
                     try:
-                        cls = (container.attr('class') or '').strip()
+                        cls = (container.attr("class") or "").strip()
                     except Exception:
-                        cls = ''
+                        cls = ""
                     reports.append(
                         {
                             "idx": idx,
@@ -1925,7 +2174,9 @@ class ProposalSender:
             return False
         except Exception as e:
             if self.partner_groups_debug_logging and emit_failure_log:
-                logger.error(f"[PartnerGroupsDebug] 验证 Partner Group 选中状态时出错: {e!r}")
+                logger.error(
+                    f"[PartnerGroupsDebug] 验证 Partner Group 选中状态时出错: {e!r}"
+                )
             return False
 
     def _click_partner_group_option_and_verify(
@@ -1977,13 +2228,15 @@ class ProposalSender:
 
         def _get_tag_input_value() -> str:
             try:
-                inp = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
+                inp = iframe.ele(
+                    'css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2
+                )
             except Exception:
                 inp = None
             if not inp:
                 return ""
             try:
-                return ((inp.attr('value') or "").strip())
+                return (inp.attr("value") or "").strip()
             except Exception:
                 return ""
 
@@ -1992,11 +2245,19 @@ class ProposalSender:
             dropdown_ele = dropdown
             if not dropdown_ele:
                 try:
-                    dropdown_ele = iframe.ele('css:[data-testid="uicl-tag-input-dropdown"]', timeout=0.3)
+                    dropdown_ele = iframe.ele(
+                        'css:[data-testid="uicl-tag-input-dropdown"]', timeout=0.3
+                    )
                 except Exception:
                     try:
-                        tag_input = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
-                        dropdown_ele = tag_input.ele('xpath:ancestor::*[@data-testid="uicl-tag-input"][1]', timeout=0.2)
+                        tag_input = iframe.ele(
+                            'css:input[data-testid="uicl-tag-input-text-input"]',
+                            timeout=0.2,
+                        )
+                        dropdown_ele = tag_input.ele(
+                            'xpath:ancestor::*[@data-testid="uicl-tag-input"][1]',
+                            timeout=0.2,
+                        )
                     except Exception:
                         dropdown_ele = None
 
@@ -2006,7 +2267,9 @@ class ProposalSender:
                 return False
 
             try:
-                opts = self._read_partner_group_dropdown_options(dropdown_ele, emit_debug_log=False)
+                opts = self._read_partner_group_dropdown_options(
+                    dropdown_ele, emit_debug_log=False
+                )
             except Exception as e:
                 if self.partner_groups_debug_logging:
                     logger.warning(f"[PartnerGroupsDebug] 读取下拉选项时出错: {e!r}")
@@ -2022,17 +2285,23 @@ class ProposalSender:
                 # 完全匹配
                 if norm_text == target_norm:
                     if self.partner_groups_debug_logging:
-                        logger.info(f"[PartnerGroupsDebug] 下拉中仍包含目标(完全匹配): '{display_text}'")
+                        logger.info(
+                            f"[PartnerGroupsDebug] 下拉中仍包含目标(完全匹配): '{display_text}'"
+                        )
                     return True
                 # 相似度匹配
                 sim = self._calc_text_similarity(display_text, target_norm)
                 if sim >= 0.8:
                     if self.partner_groups_debug_logging:
-                        logger.info(f"[PartnerGroupsDebug] 下拉中仍包含目标(相似度{sim:.2f}): '{display_text}'")
+                        logger.info(
+                            f"[PartnerGroupsDebug] 下拉中仍包含目标(相似度{sim:.2f}): '{display_text}'"
+                        )
                     return True
 
             if self.partner_groups_debug_logging:
-                logger.info(f"[PartnerGroupsDebug] 下拉中不包含目标选项，当前选项: {[t for t, _, _ in opts]}")
+                logger.info(
+                    f"[PartnerGroupsDebug] 下拉中不包含目标选项，当前选项: {[t for t, _, _ in opts]}"
+                )
             return False
 
         def _wait_selected(timeout_s: float) -> bool:
@@ -2040,18 +2309,29 @@ class ProposalSender:
             click_time = time.time()
             while time.time() < deadline:
                 # 方式1：chip 已存在，直接成功（最可靠）
-                if self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=False):
+                if self._verify_partner_group_selected(
+                    iframe, target_norm, emit_failure_log=False
+                ):
                     # 验证通过：chip 已存在，主动清空输入框（防止组件未自动清空）
                     try:
-                        inp = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=0.2)
+                        inp = iframe.ele(
+                            'css:input[data-testid="uicl-tag-input-text-input"]',
+                            timeout=0.2,
+                        )
                         if inp:
                             # 使用 JS 清空输入框，确保干净
-                            inp.run_js("this.value=''; this.dispatchEvent(new Event('input', {bubbles:true}));")
+                            inp.run_js(
+                                "this.value=''; this.dispatchEvent(new Event('input', {bubbles:true}));"
+                            )
                             if self.partner_groups_debug_logging:
-                                logger.info("[PartnerGroupsDebug] 选中后已主动清空输入框")
+                                logger.info(
+                                    "[PartnerGroupsDebug] 选中后已主动清空输入框"
+                                )
                     except Exception as e:
                         if self.partner_groups_debug_logging:
-                            logger.warning(f"[PartnerGroupsDebug] 清空输入框时出错: {e!r}")
+                            logger.warning(
+                                f"[PartnerGroupsDebug] 清空输入框时出错: {e!r}"
+                            )
                     return True
 
                 # 方式2：输入框清空 + 下拉不再包含目标项
@@ -2059,27 +2339,37 @@ class ProposalSender:
                 dropdown_cleared = not _dropdown_has_target()
 
                 if self.partner_groups_debug_logging:
-                    logger.info(f"[PartnerGroupsDebug] 验证中: input_empty={input_empty}, dropdown_cleared={dropdown_cleared}")
+                    logger.info(
+                        f"[PartnerGroupsDebug] 验证中: input_empty={input_empty}, dropdown_cleared={dropdown_cleared}"
+                    )
 
                 if input_empty and dropdown_cleared:
                     if self.partner_groups_debug_logging:
-                        logger.info("[PartnerGroupsDebug] 验证通过：输入框已清空且下拉已不包含目标选项")
+                        logger.info(
+                            "[PartnerGroupsDebug] 验证通过：输入框已清空且下拉已不包含目标选项"
+                        )
                     return True
 
                 # 方式3：点击后等待足够时间（给 DOM 更新），且输入框已清空
                 # 某些情况下 dropdown 不会立即消失，但 chip 已添加
                 if input_empty and (time.time() - click_time) >= 0.3:
                     # 再检查一次 chip 是否存在（可能在 dropdown 没消失时已添加）
-                    if self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=False):
+                    if self._verify_partner_group_selected(
+                        iframe, target_norm, emit_failure_log=False
+                    ):
                         if self.partner_groups_debug_logging:
-                            logger.info("[PartnerGroupsDebug] 验证通过：点击后延迟检查 chip 存在")
+                            logger.info(
+                                "[PartnerGroupsDebug] 验证通过：点击后延迟检查 chip 存在"
+                            )
                         return True
 
                 time.sleep(0.1)  # 优化：减少轮询间隔，加快验证速度
 
             # 只在最终失败时输出一次验证详情，避免轮询期间刷屏
             if self.partner_groups_debug_logging:
-                self._verify_partner_group_selected(iframe, target_norm, emit_failure_log=True)
+                self._verify_partner_group_selected(
+                    iframe, target_norm, emit_failure_log=True
+                )
             return False
 
         def _scroll_into_view(ele) -> None:
@@ -2149,7 +2439,7 @@ class ProposalSender:
     def _input_tag_and_select(self, iframe, selected_tab: str) -> bool:
         """在 tag-input 中逐字符输入，完整输入后出现唯一匹配时立即选中。"""
         try:
-            search_text = re.sub(r'\s+', '', selected_tab or "")
+            search_text = re.sub(r"\s+", "", selected_tab or "")
             if not search_text:
                 raise Exception("selected_tab 为空，无法输入 Partner Group")
 
@@ -2157,14 +2447,18 @@ class ProposalSender:
             cache_key = target_norm
             cached_len = self._partner_group_prefix_len_cache.get(cache_key)
 
-            tag_input = iframe.ele('css:input[data-testid="uicl-tag-input-text-input"]', timeout=3)
+            tag_input = iframe.ele(
+                'css:input[data-testid="uicl-tag-input-text-input"]', timeout=3
+            )
             if not tag_input:
                 raise Exception("未找到 tag-input 输入框")
 
             input_lengths: list[int] = []
             if cached_len and 1 <= cached_len <= len(search_text):
                 input_lengths.append(cached_len)
-            input_lengths.extend([i for i in range(1, len(search_text) + 1) if i not in input_lengths])
+            input_lengths.extend(
+                [i for i in range(1, len(search_text) + 1) if i not in input_lengths]
+            )
 
             for input_len in input_lengths:
                 prefix = search_text[:input_len]
@@ -2180,7 +2474,9 @@ class ProposalSender:
                         f"cache_key='{cache_key}', 计划尝试长度序列={input_lengths}"
                     )
                 else:
-                    logger.debug(f"Partner Group 尝试输入前缀: '{prefix}' (长度={input_len})")
+                    logger.debug(
+                        f"Partner Group 尝试输入前缀: '{prefix}' (长度={input_len})"
+                    )
                 time.sleep(0.25)
 
                 # 兼容旧版和新版 UI：
@@ -2188,14 +2484,19 @@ class ProposalSender:
                 # - 新版下拉选项直接挂在 tag-input 容器内（data-testid=\"uicl-tag-input\"）。
                 dropdown = None
                 try:
-                    dropdown = iframe.ele('css:[data-testid=\"uicl-tag-input-dropdown\"]', timeout=1)
+                    dropdown = iframe.ele(
+                        'css:[data-testid="uicl-tag-input-dropdown"]', timeout=1
+                    )
                 except Exception:
                     dropdown = None
 
                 # 优化：使用 xpath 直接查找祖先元素，代替循环 4 层 parent()
                 if not dropdown:
                     try:
-                        dropdown = tag_input.ele('xpath:ancestor::*[@data-testid="uicl-tag-input"][1]', timeout=0.3)
+                        dropdown = tag_input.ele(
+                            'xpath:ancestor::*[@data-testid="uicl-tag-input"][1]',
+                            timeout=0.3,
+                        )
                     except Exception:
                         dropdown = None
 
@@ -2231,7 +2532,9 @@ class ProposalSender:
                         wait_timeout=0.5,
                     )
                     if not ok:
-                        raise Exception(f"Partner Group 选项点击后验证失败: {pick_text}")
+                        raise Exception(
+                            f"Partner Group 选项点击后验证失败: {pick_text}"
+                        )
 
                     self._partner_group_prefix_len_cache[cache_key] = input_len
                     logger.info(
@@ -2277,7 +2580,9 @@ class ProposalSender:
                             wait_timeout=0.5,
                         )
                         if not ok:
-                            raise Exception(f"Partner Group 匹配项点击后验证失败: {pick_text}")
+                            raise Exception(
+                                f"Partner Group 匹配项点击后验证失败: {pick_text}"
+                            )
 
                         self._partner_group_prefix_len_cache[cache_key] = input_len
                         logger.info(
@@ -2297,7 +2602,7 @@ class ProposalSender:
         except Exception as e:
             logger.error(f"输入 tag 并选择失败: {e}")
             raise
-    
+
     def _get_today(self) -> date:
         """获取当前日期（带缓存），保证同一批次内所有 proposal 使用一致的 T+1"""
         if self._cached_today is None:
@@ -2324,18 +2629,18 @@ class ProposalSender:
                 target_date=target_date,
                 open_picker=True,
             )
-            
+
             if result.success:
                 logger.info(f"日期选择成功，使用方法: {result.method}")
                 return True
             else:
                 logger.warning(f"日期选择失败: {result.error}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"选择日期失败: {e}")
         return False
-    
+
     def _input_comment(self, iframe, template_content: str = "") -> bool:
         """填写留言"""
         try:
@@ -2344,16 +2649,18 @@ class ProposalSender:
                 logger.warning("留言模板为空")
                 logger.warning("留言模板为空")
                 return False
-            
-            textarea = iframe.ele('css:textarea[data-testid="uicl-textarea"]', timeout=3)
+
+            textarea = iframe.ele(
+                'css:textarea[data-testid="uicl-textarea"]', timeout=3
+            )
             if not textarea:
                 textarea = iframe.ele('css:textarea[name="comment"]', timeout=2)
-            
+
             if not textarea:
                 logger.warning("未找到留言输入框")
                 logger.warning("未找到留言输入框")
                 return False
-            
+
             textarea.click(by_js=True)
             time.sleep(0.2)
             textarea.clear()
@@ -2362,12 +2669,12 @@ class ProposalSender:
             logger.info("已填写留言内容")
             time.sleep(0.3)
             return True
-            
+
         except Exception as e:
             logger.error(f"填写留言失败: {e}")
             logger.error(f"填写留言失败: {e}")
         return False
-    
+
     def _submit_proposal(self, iframe) -> bool:
         """提交 Proposal"""
         try:
@@ -2378,108 +2685,110 @@ class ProposalSender:
                 # 关闭弹窗（点击关闭按钮或按 ESC）
                 self._close_modal(iframe)
                 return True
-            
+
             submit_btn = iframe.ele('css:button[data-testid="uicl-button"]', timeout=3)
-            if submit_btn and 'Send Proposal' in submit_btn.text:
+            if submit_btn and "Send Proposal" in submit_btn.text:
                 submit_btn.click(by_js=True)
                 logger.info("已点击提交按钮")
                 time.sleep(1)
                 self._click_understand_button(iframe)
                 return True
-            
-            submit_btn = iframe.ele('text:Send Proposal', timeout=2)
-            if submit_btn and submit_btn.tag == 'button':
+
+            submit_btn = iframe.ele("text:Send Proposal", timeout=2)
+            if submit_btn and submit_btn.tag == "button":
                 submit_btn.click(by_js=True)
                 logger.info("已点击提交按钮")
                 time.sleep(1)
                 self._click_understand_button(iframe)
                 return True
-            
+
             buttons = iframe.eles('css:button[data-testid="uicl-button"]')
             for btn in buttons:
-                if 'Send Proposal' in btn.text:
+                if "Send Proposal" in btn.text:
                     btn.click(by_js=True)
                     logger.info("已点击提交按钮")
                     time.sleep(1)
                     self._click_understand_button(iframe)
                     return True
-            
+
             logger.warning("未找到提交按钮")
             return False
-            
+
         except Exception as e:
             logger.error(f"点击提交按钮失败: {e}")
         return False
-    
+
     def _close_modal(self, iframe) -> bool:
         """关闭弹窗（用于 dry_run 模式）"""
         try:
             # 尝试点击关闭按钮
             close_btn = self.browser.find_element(
-                'css:button[data-testid="uicl-icon-button"]',
-                timeout=1,
-                parent=iframe
+                'css:button[data-testid="uicl-icon-button"]', timeout=1, parent=iframe
             )
             if close_btn:
                 self.browser.click(close_btn, by_js=True)
                 logger.info("[DRY-RUN] 已关闭弹窗")
                 time.sleep(0.5)
                 return True
-            
+
             # 备用：尝试点击 Cancel 按钮
-            cancel_btn = iframe.ele('text:Cancel', timeout=1)
-            if cancel_btn and cancel_btn.tag == 'button':
+            cancel_btn = iframe.ele("text:Cancel", timeout=1)
+            if cancel_btn and cancel_btn.tag == "button":
                 cancel_btn.click(by_js=True)
                 logger.info("[DRY-RUN] 已点击 Cancel 关闭弹窗")
                 time.sleep(0.5)
                 return True
-            
+
             # 再备用：按 ESC 键
             try:
-                self.browser.tab.actions.key_down('Escape').key_up('Escape').perform()
+                self.browser.tab.actions.key_down("Escape").key_up("Escape").perform()
                 logger.info("[DRY-RUN] 已按 ESC 关闭弹窗")
                 time.sleep(0.5)
                 return True
             except Exception:
                 pass
-            
+
             logger.warning("[DRY-RUN] 未能自动关闭弹窗，请手动关闭")
             return False
-            
+
         except Exception as e:
             logger.warning(f"[DRY-RUN] 关闭弹窗失败: {e}")
         return False
-    
+
     def _click_understand_button(self, iframe) -> bool:
         """点击确认按钮"""
         try:
             time.sleep(0.5)
-            
-            understand_btn = self.browser.find_element('text:I understand', timeout=3, parent=iframe)
-            if understand_btn and understand_btn.tag == 'button':
+
+            understand_btn = self.browser.find_element(
+                "text:I understand", timeout=3, parent=iframe
+            )
+            if understand_btn and understand_btn.tag == "button":
                 self.browser.click(understand_btn, by_js=True)
                 logger.info("已点击 'I understand' 确认按钮")
                 time.sleep(0.5)
                 return True
-            
-            buttons = self.browser.find_elements('css:button[data-testid="uicl-button"]', parent=iframe)
+
+            buttons = self.browser.find_elements(
+                'css:button[data-testid="uicl-button"]', parent=iframe
+            )
             for btn in buttons:
-                if btn and 'I understand' in (btn.text or ''):
+                if btn and "I understand" in (btn.text or ""):
                     self.browser.click(btn, by_js=True)
                     logger.info("已点击 'I understand' 确认按钮")
                     time.sleep(0.5)
                     return True
-            
-            understand_btn = self.browser.find_element('text:I understand', timeout=2)
-            if understand_btn and understand_btn.tag == 'button':
+
+            understand_btn = self.browser.find_element("text:I understand", timeout=2)
+            if understand_btn and understand_btn.tag == "button":
                 self.browser.click(understand_btn, by_js=True)
                 logger.info("已点击 'I understand' 确认按钮")
                 time.sleep(0.5)
                 return True
-            
+
             logger.warning("未找到 'I understand' 按钮")
             return False
-            
+
         except Exception as e:
             logger.error(f"点击确认按钮失败: {e}")
         return False
@@ -2498,9 +2807,10 @@ class ProposalSender:
             return iframe
 
         elapsed = time.time() - start_time
-        logger.warning(f"等待 Proposal 弹窗超时（等待了 {elapsed:.2f} 秒，超时设置: {self.modal_wait_timeout} 秒）")
+        logger.warning(
+            f"等待 Proposal 弹窗超时（等待了 {elapsed:.2f} 秒，超时设置: {self.modal_wait_timeout} 秒）"
+        )
         return None
-
 
     def _mark_button_state(self, button, attr: str, value: str = "true") -> bool:
         """为按钮设置指定的 DOM 属性标记"""
@@ -2517,7 +2827,6 @@ class ProposalSender:
             except Exception as e:
                 logger.debug(f"设置按钮属性 {attr} 失败: {e}")
         return False
-
 
 
 __all__ = ["ProposalSender", "SendProposalsResult"]
