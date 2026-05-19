@@ -5,8 +5,9 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from typing import IO, cast
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QEvent, QObject, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -28,6 +29,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from pydantic import BaseModel, Field, ValidationError, field_validator
+from loguru import logger
+from loguru._logger import Logger as LoguruLogger
 from rich.console import Console
 
 from core.config_manager import ConfigManager
@@ -114,8 +118,9 @@ def has_browser_process() -> bool:
     return False
 
 
-class QtLogStream:
+class QtLogStream(io.TextIOBase):
     def __init__(self, emit_line):
+        super().__init__()
         self.emit_line = emit_line
         self._buffer = ""
 
@@ -138,6 +143,91 @@ class QtLogStream:
 
     def isatty(self) -> bool:
         return False
+
+
+class SettingsFormModel(BaseModel):
+    max_proposals: int = Field(ge=1)
+    scroll_delay: float = Field(gt=0)
+    click_delay: float = Field(ge=0)
+    modal_wait: float = Field(gt=0)
+    dry_run: bool = False
+    input_partner_groups_tag: bool = True
+
+    @field_validator("max_proposals", "scroll_delay", "click_delay", "modal_wait", mode="before")
+    @classmethod
+    def _strip_numeric_inputs(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class PositiveIntInputModel(BaseModel):
+    value: int = Field(ge=1)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _strip_input(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class PositiveFloatInputModel(BaseModel):
+    value: float = Field(gt=0)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _strip_input(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class NonNegativeFloatInputModel(BaseModel):
+    value: float = Field(ge=0)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _strip_input(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+def format_validation_error(exc: ValidationError, field_labels: dict[str, str]) -> str:
+    messages: list[str] = []
+    for error in exc.errors():
+        field = str(error.get("loc", ("",))[0])
+        label = field_labels.get(field, field)
+        error_type = error.get("type", "")
+        ctx = error.get("ctx", {}) or {}
+
+        if error_type.endswith("_parsing"):
+            message = f"{label} 请输入有效{'整数' if 'int' in error_type else '数字'}"
+        elif error_type == "greater_than_equal":
+            message = f"{label} 需大于等于 {ctx.get('ge')}"
+        elif error_type == "greater_than":
+            message = f"{label} 需大于 {ctx.get('gt')}"
+        else:
+            message = f"{label} 输入无效"
+        messages.append(message)
+
+    return "\n".join(messages) if messages else "输入无效"
+
+
+def validate_positive_int(value: str, field_name: str) -> int:
+    try:
+        return PositiveIntInputModel.model_validate({"value": value}).value
+    except ValidationError as exc:
+        raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
+
+
+def validate_positive_float(value: str, field_name: str, allow_zero: bool = False) -> float:
+    model = NonNegativeFloatInputModel if allow_zero else PositiveFloatInputModel
+    try:
+        return model.model_validate({"value": value}).value
+    except ValidationError as exc:
+        raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
 
 
 class SettingsDialog(QDialog):
@@ -178,36 +268,39 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def get_settings(self) -> dict:
-        return {
-            "max_proposals": self._parse_positive_int(self.max_proposals_input.text(), "默认发送数量"),
-            "scroll_delay": self._parse_positive_float(self.scroll_delay_input.text(), "滚动延迟"),
-            "click_delay": self._parse_positive_float(self.click_delay_input.text(), "点击延迟", allow_zero=True),
-            "modal_wait": self._parse_positive_float(self.modal_wait_input.text(), "弹窗等待时间"),
-            "dry_run": self.dry_run_check.isChecked(),
-            "input_partner_groups_tag": self.partner_groups_check.isChecked(),
-        }
+        try:
+            settings = SettingsFormModel.model_validate(
+                {
+                    "max_proposals": self.max_proposals_input.text(),
+                    "scroll_delay": self.scroll_delay_input.text(),
+                    "click_delay": self.click_delay_input.text(),
+                    "modal_wait": self.modal_wait_input.text(),
+                    "dry_run": self.dry_run_check.isChecked(),
+                    "input_partner_groups_tag": self.partner_groups_check.isChecked(),
+                }
+            )
+        except ValidationError as exc:
+            raise ValueError(
+                format_validation_error(
+                    exc,
+                    {
+                        "max_proposals": "默认发送数量",
+                        "scroll_delay": "滚动延迟",
+                        "click_delay": "点击延迟",
+                        "modal_wait": "弹窗等待时间",
+                    },
+                )
+            ) from exc
+
+        return settings.model_dump()
 
     @staticmethod
     def _parse_positive_int(value: str, field_name: str) -> int:
-        try:
-            parsed = int(value.strip())
-        except ValueError as exc:
-            raise ValueError(f"{field_name} 请输入有效整数") from exc
-        if parsed < 1:
-            raise ValueError(f"{field_name} 需大于等于 1")
-        return parsed
+        return validate_positive_int(value, field_name)
 
     @staticmethod
     def _parse_positive_float(value: str, field_name: str, allow_zero: bool = False) -> float:
-        try:
-            parsed = float(value.strip())
-        except ValueError as exc:
-            raise ValueError(f"{field_name} 请输入有效数字") from exc
-        if allow_zero and parsed < 0:
-            raise ValueError(f"{field_name} 不能小于 0")
-        if not allow_zero and parsed <= 0:
-            raise ValueError(f"{field_name} 需大于 0")
-        return parsed
+        return validate_positive_float(value, field_name, allow_zero=allow_zero)
 
 
 class TemplateDialog(QDialog):
@@ -359,18 +452,50 @@ class TemplateDialog(QDialog):
         self.load_templates()
 
 
+class BrowserProbeWorker(QThread):
+    """后台浏览器连接检测线程"""
+    probe_result = pyqtSignal(bool)
+
+    def __init__(self, browser: BrowserManager, timeout_ms: int = 200, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+        self.timeout_ms = timeout_ms
+
+    def run(self) -> None:
+        connected = False
+        try:
+            import threading
+            result = {"connected": False}
+
+            def check():
+                try:
+                    if self.browser and self.browser.is_connected():
+                        result["connected"] = True
+                except Exception:
+                    pass
+
+            t = threading.Thread(target=check)
+            t.daemon = True
+            t.start()
+            t.join(timeout=self.timeout_ms / 1000.0)
+            connected = result["connected"]
+        except Exception:
+            connected = False
+        self.probe_result.emit(connected)
+
+
 class TaskWorker(QThread):
     log_line = pyqtSignal(str)
     task_done = pyqtSignal(int, bool, str)
 
-    def __init__(self, config: ConfigManager, mode: str, max_count: int, start_value: int, parent=None):
+    def __init__(self, browser: BrowserManager, config: ConfigManager, mode: str, max_count: int, start_value: int, parent=None):
         super().__init__(parent)
+        self.browser = browser
         self.config = config
         self.mode = mode
         self.max_count = max_count
         self.start_value = start_value
         self._stop_requested = False
-        self.browser: BrowserManager | None = None
         self.proposal_sender: ProposalSender | None = None
 
     def request_stop(self) -> None:
@@ -382,15 +507,11 @@ class TaskWorker(QThread):
         try:
             template_manager = TemplateManager(self.config)
             log_stream = QtLogStream(self.log_line.emit)
-            console = Console(file=log_stream, force_terminal=False, color_system=None, width=120)
+            console = Console(file=cast(IO[str], log_stream), force_terminal=False, color_system=None, width=120)
 
-            self.browser = BrowserManager(console, self.config)
             self.proposal_sender = ProposalSender(self.browser, template_manager, console, self.config)
             if self._stop_requested:
                 self.proposal_sender.request_stop()
-
-            if not self.browser.is_connected() and not self.browser.init():
-                raise RuntimeError("无法连接浏览器，请确认 Chrome/Edge 已打开并已登录 Impact")
 
             template = template_manager.get_active_template()
             if self.mode == "list":
@@ -418,20 +539,134 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Impact RPA - PyQt 桌面版")
         self.resize(1120, 760)
+        # 限制最小宽度
+        self.setMinimumWidth(900)
+        # 限制最小高度
+        self.setMinimumHeight(600)
+        
         self.setStyleSheet(self.get_stylesheet())
 
         self.config = ConfigManager()
         self.settings_service = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
-        self.browser_probe = BrowserManager(self._build_silent_console(), self.config)
+        self.browser: BrowserManager | None = None
         self.worker: TaskWorker | None = None
+        self.probe_worker: BrowserProbeWorker | None = None
+        self._cached_browser_connected = False
+        self._lock_widgets: list = []
+        self._highlight_animation: QTimer | None = None
 
         self.init_ui()
+        self._install_event_filters()
         self.refresh_all()
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_runtime_state)
-        self.refresh_timer.start(5000)
+        self.refresh_timer.start(10000)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ty:ignore[invalid-method-override]
+        """拦截被锁定控件的点击事件"""
+        if obj in self._lock_widgets and event.type() == QEvent.Type.MouseButtonPress:
+            widget = cast(QWidget, obj)
+            # 只有在控件被禁用时才显示提示（浏览器未连接时）
+            if not widget.isEnabled():
+                self._show_connect_prompt(widget)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _install_event_filters(self) -> None:
+        """为被锁定的控件安装事件过滤器"""
+        self._lock_widgets = [
+            self.tab_widget,
+            self.start_btn,
+            self.list_max_count_input,
+            self.list_start_idx_input,
+            self.search_max_count_input,
+            self.search_start_row_input,
+        ]
+        for widget in self._lock_widgets:
+            widget.installEventFilter(self)
+
+    def _show_connect_prompt(self, source_widget) -> None:
+        """显示连接提示并引导用户到连接按钮"""
+        # 显示提示框
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setWindowTitle("界面已锁定")
+        msg_box.setText("请先点击右上角的「连接浏览器」按钮")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+
+        # 开始高亮动效引导
+        self._start_highlight_animation()
+
+    def _start_highlight_animation(self) -> None:
+        """启动高亮闪烁动效引导用户视线"""
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+
+        self._highlight_animation = QTimer(self)
+        highlight_state = {"on": False}
+
+        # 保存原始样式
+        original_style = self.connect_btn.styleSheet()
+
+        def animate():
+            highlight_state["on"] = not highlight_state["on"]
+            if highlight_state["on"]:
+                self.connect_btn.setStyleSheet(original_style + """
+                    QPushButton {
+                        background-color: #E74C3C;
+                        color: #FFFFFF;
+                        border: 2px solid #C0392B;
+                        border-radius: 12px;
+                        padding: 6px 16px;
+                        font-weight: bold;
+                    }
+                """)
+                # 确保按钮在视口内
+                rect = self.connect_btn.geometry()
+                if rect.top() < 0:
+                    self.scroll_to_widget(self.connect_btn)
+            else:
+                self.connect_btn.setStyleSheet(original_style)
+
+        self._highlight_animation.timeout.connect(animate)
+        self._highlight_animation.start(400)  # 每400ms切换状态
+
+        # 3秒后自动停止高亮
+        QTimer.singleShot(3000, self._stop_highlight_animation)
+
+    def _stop_highlight_animation(self) -> None:
+        """停止高亮动效"""
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+            self._highlight_animation = None
+        # 恢复原始样式
+        self.connect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #34495E;
+                color: #ECF0F1;
+                border: none;
+                border-radius: 12px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2C3E50;
+            }
+            QPushButton:disabled {
+                background-color: #1ABC9C;
+                color: #ECF0F1;
+            }
+        """)
+
+    def scroll_to_widget(self, widget: QWidget) -> None:
+        """滚动到指定控件位置"""
+        # 确保按钮在视口内
+        self.ensurePolished()
+        self.activateWindow()
+        self.raise_()
 
     @staticmethod
     def _build_silent_console() -> Console:
@@ -448,15 +683,34 @@ class MainWindow(QMainWindow):
         title_label = QLabel("Impact RPA")
         title_label.setObjectName("appTitle")
 
-        self.status_label = QLabel("浏览器状态检测中...")
-        self.status_label.setObjectName("statusLabel")
+        self.browser_connected = False
+        self.connect_btn = QPushButton("连接浏览器")
+        self.connect_btn.setObjectName("connectBtn")
+        self.connect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #34495E;
+                color: #ECF0F1;
+                border: none;
+                border-radius: 12px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2C3E50;
+            }
+            QPushButton:disabled {
+                background-color: #1ABC9C;
+                color: #ECF0F1;
+            }
+        """)
+        self.connect_btn.clicked.connect(self._on_connect_browser_clicked)
 
         settings_btn = QPushButton("设置")
         settings_btn.clicked.connect(self.open_settings)
 
         nav_layout.addWidget(title_label)
         nav_layout.addStretch()
-        nav_layout.addWidget(self.status_label)
+        nav_layout.addWidget(self.connect_btn)
         nav_layout.addWidget(settings_btn)
         main_layout.addLayout(nav_layout)
 
@@ -484,8 +738,29 @@ class MainWindow(QMainWindow):
         task_layout = QVBoxLayout(task_group)
 
         self.tab_widget = QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabBar::tab {
+                background-color: #34495E;
+                color: #ECF0F1;
+                padding: 8px 16px;
+                border: 1px solid #2C3E50;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #ECF0F1;
+                color: #34495E;
+                font-weight: bold;
+            }
+            QTabBar::tab:!selected {
+                background-color: #34495E;
+            }
+            QWidget#list_tab, QWidget#search_tab {
+                background-color: #ECF0F1;
+            }
+        """)
 
         list_tab = QWidget()
+        list_tab.setObjectName("list_tab")
         list_layout = QFormLayout(list_tab)
         self.list_max_count_input = QLineEdit("10")
         self.list_start_idx_input = QLineEdit("1")
@@ -495,6 +770,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(list_tab, "列表页批量发送")
 
         search_tab = QWidget()
+        search_tab.setObjectName("search_tab")
         search_layout = QFormLayout(search_tab)
         self.search_max_count_input = QLineEdit("10")
         self.search_start_row_input = QLineEdit("1")
@@ -580,6 +856,7 @@ class MainWindow(QMainWindow):
         self.refresh_templates()
         self.refresh_settings_inputs()
         self.refresh_runtime_state()
+        self._lock_interface()
         self.log_message("系统启动，真实配置已加载", "info")
 
     def refresh_templates(self) -> None:
@@ -602,40 +879,84 @@ class MainWindow(QMainWindow):
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(count_today_sent(self.config)))
-        self.update_browser_status(self.detect_browser_connected())
         self.refresh_templates()
         self.refresh_settings_inputs()
+        self._start_browser_probe()
+
+    def _start_browser_probe(self) -> None:
+        """启动后台浏览器连接检测（200ms 超时）"""
+        if self.probe_worker and self.probe_worker.isRunning():
+            return
+
+        target_browser = self.worker.browser if (self.worker and self.worker.browser) else self.browser
+        if not target_browser:
+            self.update_browser_status(False)
+            return
+
+        self.probe_worker = BrowserProbeWorker(target_browser, timeout_ms=200, parent=self)
+        self.probe_worker.probe_result.connect(self._on_browser_probe_result)
+        self.probe_worker.start()
+
+    def _on_browser_probe_result(self, connected: bool) -> None:
+        """处理浏览器连接检测结果"""
+        self._cached_browser_connected = connected
+        self.update_browser_status(connected)
 
     def detect_browser_connected(self) -> bool:
-        if self.worker and self.worker.browser and self.worker.browser.is_connected():
-            return True
+        """返回缓存的浏览器连接状态"""
+        return self._cached_browser_connected
 
-        if self.browser_probe.is_connected():
-            return True
+    def _lock_interface(self) -> None:
+        """锁定界面，禁用除连接按钮外的所有交互元素"""
+        self.tab_widget.setEnabled(False)
+        self.start_btn.setEnabled(False)
+        self.list_max_count_input.setEnabled(False)
+        self.list_start_idx_input.setEnabled(False)
+        self.search_max_count_input.setEnabled(False)
+        self.search_start_row_input.setEnabled(False)
 
-        if not has_browser_process():
-            return False
-
-        probe = BrowserManager(self._build_silent_console(), self.config)
-        if probe.init() and probe.is_connected():
-            self.browser_probe = probe
-            return True
-
-        return False
+    def _unlock_interface(self) -> None:
+        """解锁界面，恢复所有交互元素"""
+        self._stop_highlight_animation()
+        self.tab_widget.setEnabled(True)
+        self.start_btn.setEnabled(True)
+        self.list_max_count_input.setEnabled(True)
+        self.list_start_idx_input.setEnabled(True)
+        self.search_max_count_input.setEnabled(True)
+        self.search_start_row_input.setEnabled(True)
 
     def update_browser_status(self, connected: bool) -> None:
+        self._cached_browser_connected = connected
         if connected:
-            self.status_label.setText("浏览器已连接")
-            self.status_label.setStyleSheet(
-                "color: #15803d; background-color: #f0fdf4; border: 1px solid #bbf7d0; "
-                "border-radius: 12px; padding: 4px 10px; font-weight: bold;"
-            )
+            self.connect_btn.setText("浏览器已连接")
+            self.connect_btn.setEnabled(False)
+            self._unlock_interface()
         else:
-            self.status_label.setText("浏览器未连接")
-            self.status_label.setStyleSheet(
-                "color: #b91c1c; background-color: #fef2f2; border: 1px solid #fecaca; "
-                "border-radius: 12px; padding: 4px 10px; font-weight: bold;"
-            )
+            self.connect_btn.setText("连接浏览器")
+            self.connect_btn.setEnabled(True)
+            self._lock_interface()
+
+    def _on_connect_browser_clicked(self) -> None:
+        """手动点击连接浏览器按钮"""
+        self.connect_btn.setText("连接中...")
+        self.connect_btn.setEnabled(False)
+
+        def do_connect():
+            try:
+                self.browser = BrowserManager(cast(LoguruLogger, logger), self.config)
+                if self.browser.init() and self.browser.is_connected():
+                    self.update_browser_status(True)
+                    logger.info("浏览器连接成功")
+                else:
+                    self.update_browser_status(False)
+                    QMessageBox.warning(self, "连接失败", "无法连接浏览器，请确认 Chrome/Edge 已打开并已登录 Impact")
+                    logger.warning("浏览器连接失败")
+            except Exception as e:
+                self.update_browser_status(False)
+                QMessageBox.warning(self, "连接错误", f"连接浏览器时发生错误: {e}")
+                logger.error(f"连接浏览器时发生错误: {e}")
+
+        QTimer.singleShot(100, do_connect)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings_service.get_snapshot(), self)
@@ -674,13 +995,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def parse_positive_int(value: str, field_name: str) -> int:
-        try:
-            parsed = int(value.strip())
-        except ValueError as exc:
-            raise ValueError(f"{field_name} 请输入有效整数") from exc
-        if parsed < 1:
-            raise ValueError(f"{field_name} 需大于等于 1")
-        return parsed
+        return validate_positive_int(value, field_name)
 
     def start_task(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -707,7 +1022,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", str(e))
             return
 
-        self.worker = TaskWorker(self.config, mode, max_count, start_value, self)
+        if not self.browser or not self.browser.is_connected():
+            QMessageBox.warning(self, "浏览器未连接", "请先点击「连接浏览器」按钮连接浏览器")
+            return
+
+        self.worker = TaskWorker(self.browser, self.config, mode, max_count, start_value, self)
         self.worker.log_line.connect(self.handle_worker_log)
         self.worker.task_done.connect(self.handle_task_done)
         self.worker.start()
@@ -730,9 +1049,8 @@ class MainWindow(QMainWindow):
 
     def handle_task_done(self, clicked_count: int, completed_all: bool, error_message: str) -> None:
         if self.worker and self.worker.browser and self.worker.browser.is_connected():
-            self.browser_probe = self.worker.browser
+            self.browser = self.worker.browser
 
-        self.start_btn.setEnabled(True)
         self.start_btn.setText("开始执行")
         self.stop_btn.setEnabled(False)
         self.stop_btn.setText("强制停止")
@@ -744,6 +1062,7 @@ class MainWindow(QMainWindow):
         else:
             self.log_message(f"任务结束，当前批次共发送 {clicked_count} 个 Proposal", "warn")
 
+        self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()
         self.worker = None
 
