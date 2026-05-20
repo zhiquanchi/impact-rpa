@@ -1292,16 +1292,13 @@ class MainWindow(QMainWindow):
 
         # 获取 Template Term 选项（需要浏览器连接）
         term_options: list[str] = []
-        if self.browser and self.browser.is_connected():
+        if self.browser and self.browser.is_connected() and self.browser.tab:
             try:
-                iframe = self.browser.get_active_iframe()
+                iframe = self.browser.tab.get_active_iframe()
                 if iframe:
-                    from domain.proposal_sender import ProposalSender
+                    from domain.template_term_utils import get_template_term_options
 
-                    sender = ProposalSender.__new__(ProposalSender)
-                    sender.browser = self.browser
-                    sender.config = self.config
-                    term_options = sender.get_template_term_options(iframe)
+                    term_options = get_template_term_options(iframe)
             except Exception:
                 pass
 
