@@ -11,6 +11,7 @@ class ConfigManager:
         self.config_dir = os.path.join(self.base_dir, "config")
         self.log_dir = os.path.join(self.base_dir, "logs")
         self.template_file = os.path.join(self.config_dir, "template.txt")
+        self.template_terms_file = os.path.join(self.config_dir, "template_terms.json")
         self.templates_file = os.path.join(self.config_dir, "templates.json")
         self.settings_file = os.path.join(self.config_dir, "settings.json")
         # 可选：由组合根注入，用于配置热更新
@@ -94,4 +95,3 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"保存设置失败: {e}")
             return False
-

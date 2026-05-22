@@ -1,13 +1,16 @@
 import html
 import io
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import IO, cast
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QEvent, QObject, pyqtSignal
+from loguru import logger
+from loguru._logger import Logger as LoguruLogger
+from pydantic import BaseModel, Field, ValidationError, field_validator
+from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -23,6 +26,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -30,9 +34,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from pydantic import BaseModel, Field, ValidationError, field_validator
-from loguru import logger
-from loguru._logger import Logger as LoguruLogger
 from rich.console import Console
 
 from core.config_manager import ConfigManager
@@ -45,7 +46,8 @@ from infra.browser_manager import BrowserManager
 
 def count_today_sent(config: ConfigManager) -> int:
     today_str = datetime.now().strftime("%Y-%m-%d")
-    log_file = os.path.join(config.log_dir, f"impact_rpa_{today_str}.log")
+    log_dir = Path(config.log_dir)
+    log_file = log_dir / f"impact_rpa_{today_str}.log"
     success_markers = (
         "已点击 Send Proposal 按钮",
         "发送成功: row=",
@@ -53,8 +55,8 @@ def count_today_sent(config: ConfigManager) -> int:
     count = 0
 
     try:
-        if os.path.exists(log_file):
-            with open(log_file, "r", encoding="utf-8") as f:
+        if log_file.exists():
+            with log_file.open("r", encoding="utf-8") as f:
                 for line in f:
                     if any(marker in line for marker in success_markers):
                         count += 1
@@ -65,13 +67,12 @@ def count_today_sent(config: ConfigManager) -> int:
         return count
 
     try:
-        for filename in os.listdir(config.log_dir):
-            if not filename.startswith("creator_search_sent_") or not filename.endswith(
-                ".json"
-            ):
+        for filepath in log_dir.iterdir():
+            if not filepath.name.startswith(
+                "creator_search_sent_"
+            ) or not filepath.name.endswith(".json"):
                 continue
-            filepath = os.path.join(config.log_dir, filename)
-            with open(filepath, "r", encoding="utf-8") as f:
+            with filepath.open("r", encoding="utf-8") as f:
                 records = json.load(f)
             for record in records:
                 timestamp = str(record.get("timestamp", ""))
@@ -290,14 +291,30 @@ class SettingsDialog(QDialog):
         term_layout = QHBoxLayout()
         self.term_combo = QComboBox()
         self.term_combo.setEditable(True)
-        self.term_combo.addItem("")
         current_term = snapshot.get("template_term", "")
-        if current_term:
-            self.term_combo.addItem(current_term)
-            self.term_combo.setCurrentText(current_term)
+        # 从缓存文件加载历史选项
+        cached_terms: list[str] = self._load_cached_terms()
+        if cached_terms:
+            for opt in cached_terms:
+                self.term_combo.addItem(opt)
+            if current_term:
+                idx = self.term_combo.findText(current_term)
+                if idx >= 0:
+                    self.term_combo.setCurrentIndex(idx)
+                else:
+                    self.term_combo.setCurrentText(current_term)
+            else:
+                self.term_combo.setCurrentIndex(0)
+        else:
+            if current_term:
+                self.term_combo.addItem(current_term)
+                self.term_combo.setCurrentText(current_term)
+        # 无配置值且无缓存时禁用下拉框
+        if not current_term and not cached_terms:
+            self.term_combo.setEnabled(False)
 
         self.fetch_term_btn = QPushButton("获取选项")
-        self.fetch_term_btn.setToolTip("从 Template Term 管理页的网络响应中获取下拉选项")
+        self.fetch_term_btn.setToolTip("深度分析并获取 Template Term 的所有选项")
         self.fetch_term_btn.clicked.connect(self._fetch_term_options)
         term_layout.addWidget(self.term_combo, 1)
         term_layout.addWidget(self.fetch_term_btn)
@@ -331,20 +348,46 @@ class SettingsDialog(QDialog):
         reply = QMessageBox.question(
             self,
             "获取 Template Term 选项",
-            "程序会打开 Template Term 管理页，并只从网络响应中解析下拉选项。\n"
-            "完成后会尝试返回当前页面。\n\n"
-            "是否继续？",
+            "会花费一些时间，请耐心等待。是否继续？",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         self.fetch_term_btn.setEnabled(False)
         self.fetch_term_btn.setText("获取中...")
+
+        # 模态加载对话框
+        self._fetch_progress_dialog = QDialog(self)
+        self._fetch_progress_dialog.setWindowTitle("获取中")
+        self._fetch_progress_dialog.setModal(True)
+        self._fetch_progress_dialog.setFixedSize(320, 100)
+        self._fetch_progress_dialog.setWindowFlags(
+            self._fetch_progress_dialog.windowFlags()
+            & ~Qt.WindowType.WindowCloseButtonHint
+        )
+        progress_layout = QVBoxLayout(self._fetch_progress_dialog)
+        progress_layout.addWidget(
+            QLabel("正在深度分析并获取 Template Term 的所有选项...")
+        )
+        progress_bar = QProgressBar()
+        progress_bar.setMinimum(0)
+        progress_bar.setMaximum(0)  # 不确定进度模式
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(20)
+        progress_layout.addWidget(progress_bar)
+
+        self._fetch_progress_dialog.show()
+
         self._term_fetch_worker = TemplateTermFetchWorker(self.browser, self)
         self._term_fetch_worker.fetch_done.connect(self._on_term_options_fetched)
         self._term_fetch_worker.start()
 
     def _on_term_options_fetched(self, options: list[str], error: str) -> None:
+        # 关闭模态加载对话框
+        if hasattr(self, "_fetch_progress_dialog") and self._fetch_progress_dialog:
+            self._fetch_progress_dialog.close()
+            self._fetch_progress_dialog = None
+
         self.fetch_term_btn.setEnabled(True)
         self.fetch_term_btn.setText("获取选项")
         self._term_fetch_worker = None
@@ -361,9 +404,13 @@ class SettingsDialog(QDialog):
             )
             return
 
+        # 保存到缓存文件
+        self._save_cached_terms(options)
+
         current_text = self.term_combo.currentText()
+        self.term_combo.setEnabled(True)
         self.term_combo.clear()
-        self.term_combo.addItem("")  # 保留空选项
+        # 保留空选项
         for opt in options:
             self.term_combo.addItem(opt)
 
@@ -377,8 +424,37 @@ class SettingsDialog(QDialog):
             self.term_combo.setCurrentIndex(0)
 
         QMessageBox.information(
-            self, "获取成功", f"已从管理页网络响应获取 {len(options)} 个选项并填充到下拉框。"
+            self,
+            "获取成功",
+            f"已从管理页网络响应获取 {len(options)} 个选项并填充到下拉框。",
         )
+
+    def _get_terms_file_path(self) -> Path:
+        """获取 Template Terms 缓存文件路径"""
+        config = ConfigManager()
+        return Path(config.template_terms_file)
+
+    def _load_cached_terms(self) -> list[str]:
+        """从缓存文件加载 Template Term 选项列表"""
+        try:
+            path = self._get_terms_file_path()
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data.get("terms", [])
+        except Exception:
+            pass
+        return []
+
+    def _save_cached_terms(self, terms: list[str]) -> None:
+        """将 Template Term 选项列表保存到缓存文件"""
+        try:
+            path = self._get_terms_file_path()
+            path.write_text(
+                json.dumps({"terms": terms}, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     def get_settings(self) -> dict:
         try:
@@ -1313,7 +1389,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, do_connect)
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.settings_service.get_snapshot(), self.browser, self)
+        dialog = SettingsDialog(
+            self.settings_service.get_snapshot(), self.browser, self
+        )
         if dialog.exec():
             try:
                 snapshot = self.settings_service.get_snapshot()
@@ -1397,7 +1475,9 @@ class MainWindow(QMainWindow):
                 if iframe:
                     from domain.template_term_utils import get_template_term_options
 
-                    term_options = get_template_term_options(iframe, tab=self.browser.tab)
+                    term_options = get_template_term_options(
+                        iframe, tab=self.browser.tab
+                    )
             except Exception:
                 pass
 
