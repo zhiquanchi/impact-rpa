@@ -7,21 +7,33 @@ class ProposalModalService:
     def __init__(self, sender):
         self.sender = sender
 
-    def handle_modal(self, selected_tab: str | None = None, template_content: str = "") -> bool:
+    def handle_modal(
+        self, selected_tab: str | None = None, template_content: str = ""
+    ) -> bool:
         try:
             iframe = self.sender._wait_for_modal_iframe()
             if not iframe:
-                logger.warning(f"未找到弹窗 iframe (类别: {selected_tab or '未知'})，可能弹窗加载超时")
+                logger.warning(
+                    f"未找到弹窗 iframe (类别: {selected_tab or '未知'})，可能弹窗加载超时"
+                )
                 return False
 
-            ok = self.sender._select_template_term(iframe, self.sender.template_term)
+            ok = self.sender.template_term_selector.select(
+                iframe,
+                self.sender.template_term,
+                tab=self.sender.browser.tab if self.sender.browser else None,
+            )
             if not ok:
-                raise RuntimeError(f"template_term_not_found: {self.sender.template_term}")
+                raise RuntimeError(
+                    f"template_term_not_found: {self.sender.template_term}"
+                )
 
             self.sender._select_tomorrow_date(iframe)
             self.sender._input_comment(iframe, template_content)
 
-            should_input_partner_groups = bool(getattr(self.sender, "input_partner_groups_tag", True))
+            should_input_partner_groups = bool(
+                getattr(self.sender, "input_partner_groups_tag", True)
+            )
             if should_input_partner_groups and selected_tab:
                 self.sender._apply_partner_group(iframe, selected_tab)
 
@@ -29,9 +41,12 @@ class ProposalModalService:
             return True
         except Exception as e:
             error_msg = str(e).lower()
-            if "disconnect" in error_msg or "context" in error_msg or "target closed" in error_msg:
+            if (
+                "disconnect" in error_msg
+                or "context" in error_msg
+                or "target closed" in error_msg
+            ):
                 logger.warning(f"处理弹窗时页面断开: {e}")
                 raise
             logger.error(f"处理弹窗失败: {e}")
         return False
-

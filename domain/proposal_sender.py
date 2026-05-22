@@ -1,11 +1,8 @@
 from domain.proposal_modal_service import ProposalModalService
 from domain.selectors import MODAL_IFRAME_SELECTOR
+from domain.template_term_selector import TemplateTermSelector
 from domain.template_term_utils import get_template_term_options
 from domain.wait_utils import wait_until
-from domain.template_term_utils import (
-    get_template_term_options,
-    _open_template_term_dropdown,
-)
 
 import os
 import re
@@ -15,21 +12,9 @@ from datetime import date, datetime, timedelta
 from loguru import logger
 import questionary
 from rich.panel import Panel
-from difflib import SequenceMatcher
 
 from exception_handler import exception_handler
 from domain.date_picker import DatePicker
-
-
-class TemplateTermNotConfiguredError(Exception):
-    """Template Term 未配置异常
-
-    当 settings.template_term 为空、未定义或不存在时抛出此异常。
-    """
-
-    def __init__(self, message: str = "Template Term 未配置"):
-        self.message = message
-        super().__init__(self.message)
 
 
 @dataclass(frozen=True)
@@ -68,6 +53,8 @@ class ProposalSender:
         self._config_store = config_store
         # 初始化日期选择器
         self.date_picker = DatePicker(console)
+        # 初始化 Template Term 选择器
+        self.template_term_selector = TemplateTermSelector(config)
 
         # 订阅配置热更新（如果启用）
         try:
@@ -1321,16 +1308,11 @@ class ProposalSender:
                 )
                 return False
 
-            # 先检查 template_term 是否有有效值
-            if not self.template_term or not str(self.template_term).strip():
-                error_msg = (
-                    f"Template Term 未配置（当前值: '{self.template_term}'）\n"
-                    "请在开始发送前通过确认弹窗选择 Template Term。"
-                )
-                logger.error(error_msg)
-                raise TemplateTermNotConfiguredError(error_msg)
-
-            ok = self._select_template_term(iframe, self.template_term)
+            ok = self.template_term_selector.select(
+                iframe,
+                self.template_term,
+                tab=self.browser.tab if self.browser else None,
+            )
             if not ok:
                 raise RuntimeError(f"template_term_not_found: {self.template_term}")
 
@@ -1359,179 +1341,6 @@ class ProposalSender:
         """菜单层可调用的公开方法。"""
         tab = self.browser.tab if self.browser else None
         return get_template_term_options(iframe, tab=tab)
-
-    def _select_template_term(self, iframe, term_text: str | None = None) -> bool:
-        """选择 Template Term
-
-        Args:
-            iframe: iframe 对象
-            term_text: 要选择的 Template Term 文本。如果为 None、空字符串或未定义，
-                       则抛出 TemplateTermNotConfiguredError。
-
-        Returns:
-            bool: 选择成功返回 True，失败返回 False
-
-        Raises:
-            TemplateTermNotConfiguredError: 当 term_text 为空、未定义或不存在时抛出
-        """
-        # ── 空值检查：确保 term_text 有有效值 ──
-        if not term_text or not str(term_text).strip():
-            error_msg = (
-                "Template Term 未配置！\n"
-                "当前 settings.template_term 为空或未定义。\n"
-                "请在开始发送前通过确认弹窗选择 Template Term。"
-            )
-            logger.error(error_msg)
-            raise TemplateTermNotConfiguredError(error_msg)
-
-        try:
-            desired = (term_text or "Commission Tier Terms").strip()
-            desired_norm = re.sub(r"\s+", " ", desired).strip().lower()
-            logger.debug(
-                f"匹配 Template Term: desired='{desired}', desired_norm='{desired_norm}'"
-            )
-            term_sim_threshold = 0.72
-            term_sim_tie_eps = 0.005
-
-            term_dropdown = iframe.ele(
-                'css:select[data-testid="uicl-select"]', timeout=2
-            )
-
-            if term_dropdown:
-                try:
-                    term_dropdown.select(desired)
-                    logger.info(f"已选择 Template Term: {desired}")
-                    time.sleep(0.3)
-                    return True
-                except Exception as e:
-                    logger.warning(
-                        f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}"
-                    )
-
-            dropdown = _open_template_term_dropdown(iframe)
-
-            if dropdown:
-                options = []
-                # 优先从 listbox 中获取选项
-                listbox = dropdown.ele('css:ul[role="listbox"]', timeout=0.5)
-                if listbox:
-                    items = listbox.eles("css:li")
-                else:
-                    items = dropdown.eles('xpath:.//li[@role="option"]')
-
-                for it in items or []:
-                    txt = it.text or ""
-                    txtn = re.sub(r"\s+", " ", txt).strip().lower()
-                    options.append((txt, txtn, it))
-                if not options:
-                    nodes = dropdown.eles("css:div.text-ellipsis")
-                    for it in nodes or []:
-                        txt = it.text or ""
-                        txtn = re.sub(r"\s+", " ", txt).strip().lower()
-                        options.append((txt, txtn, it))
-
-                # 去重：避免 DOM 中相同显示文本的重复节点，但保留 "(1)/(2)" 这类明确值
-                seen_norm = set()
-                unique_options = []
-                for txt, txtn, ele in options:
-                    if txtn not in seen_norm:
-                        seen_norm.add(txtn)
-                        unique_options.append((txt, txtn, ele))
-                options = unique_options
-                logger.debug(
-                    f"找到 {len(options)} 个唯一 Template Term 选项: {[txt for txt, _, _ in options]}"
-                )
-
-                def _click_term_row(
-                    elem, picked_label: str, persist_choice: bool = False
-                ) -> bool:
-                    try:
-                        elem.wait.clickable()
-                    except Exception:
-                        pass
-                    try:
-                        elem.click()
-                    except Exception:
-                        elem.click(by_js=True)
-                    if persist_choice:
-                        settings = self.config.load_settings()
-                        settings["template_term"] = picked_label
-                        self.config.save_settings(settings)
-                        self.template_term = picked_label
-                    logger.info(f"已选择 Template Term: {picked_label}")
-                    time.sleep(0.3)
-                    return True
-
-                def _ask_choice(total: int):
-                    sel = questionary.text(
-                        "请输入编号:",
-                        validate=lambda x: (
-                            x.isdigit() and 1 <= int(x) <= total or "请输入有效编号"
-                        ),
-                    ).ask()
-                    if sel and sel.isdigit():
-                        return int(sel) - 1
-                    return None
-
-                def _prompt_and_pick(candidates, title: str) -> bool:
-                    """候选项结构: [(display_text, element, persist_label)]"""
-                    if title:
-                        self.console.print(title)
-                    for idx, (display_text, _, _) in enumerate(candidates, start=1):
-                        self.console.print(f"{idx}. {display_text}")
-                    picked_index = _ask_choice(len(candidates))
-                    if picked_index is None:
-                        return False
-                    _, element, persist_label = candidates[picked_index]
-                    return _click_term_row(element, persist_label, persist_choice=True)
-
-                scored = [
-                    (SequenceMatcher(None, desired_norm, n).ratio(), t, e)
-                    for (t, n, e) in options
-                ]
-                scored.sort(key=lambda x: -x[0])
-                best_score = scored[0][0] if scored else 0.0
-                logger.debug(
-                    f"Template Term 相似度得分: {[(t, f'{score:.3f}') for score, t, _ in scored]}"
-                )
-                logger.debug(f"最佳得分: {best_score:.3f}, 阈值: {term_sim_threshold}")
-                if best_score >= term_sim_threshold:
-                    top = [s for s in scored if s[0] >= best_score - term_sim_tie_eps]
-                    logger.debug(
-                        f"匹配成功，最佳得分 {best_score:.3f} ≥ 阈值 {term_sim_threshold}，找到 {len(top)} 个候选项"
-                    )
-                    if len(top) == 1:
-                        return _click_term_row(top[0][2], top[0][1])
-                    top_candidates = [
-                        (f"{t}  [dim](相似度 {best_score:.2f})[/dim]", e, t)
-                        for (_, t, e) in top
-                    ]
-                    if _prompt_and_pick(
-                        top_candidates, "\n[bold]多个相似候选项，请选择：[/bold]"
-                    ):
-                        return True
-                    return False
-
-                logger.debug(
-                    f"匹配失败，最佳得分 {best_score:.3f} < 阈值 {term_sim_threshold}"
-                )
-                if options:
-                    self.console.print(
-                        f"\n[bold]未匹配到配置项（最高相似度 {best_score:.2f}，需 ≥{term_sim_threshold:.2f}），"
-                        "以下为所有可选项：[/bold]"
-                    )
-                    all_candidates = [(t, e, t) for (t, _, e) in options]
-                    if _prompt_and_pick(all_candidates, ""):
-                        return True
-                    return False
-
-            logger.debug("未找到 Template Term 下拉框或选项")
-            self.console.print("\n[bold]未找到可选项[/bold]")
-            return False
-
-        except Exception as e:
-            logger.error(f"选择 Template Term 失败: {e}")
-            return False
 
     def _normalize_partner_group_text(self, text: str) -> str:
         """规范化 Partner Group 文本用于匹配。"""
