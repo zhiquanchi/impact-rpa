@@ -12,7 +12,10 @@ from difflib import SequenceMatcher
 import questionary
 from loguru import logger
 
-from domain.template_term_utils import _open_template_term_dropdown
+from domain.template_term_utils import (
+    _open_template_term_dropdown,
+    try_native_template_term_select,
+)
 
 
 class TemplateTermNotConfiguredError(Exception):
@@ -75,22 +78,12 @@ class TemplateTermSelector:
                 f"匹配 Template Term: desired='{desired}', desired_norm='{desired_norm}'"
             )
 
-            # 策略1：原生 <select> 元素直接选择
-            term_dropdown = iframe.ele(
-                'css:select[data-testid="uicl-select"]', timeout=2
-            )
-            if term_dropdown:
-                try:
-                    term_dropdown.select(desired)
-                    logger.info(f"已选择 Template Term: {desired}")
-                    time.sleep(0.3)
-                    return True
-                except Exception as e:
-                    logger.warning(
-                        f"<select> 选择 Template Term 失败，尝试自定义下拉: {e}"
-                    )
+            # 策略1：Template Term 关联的原生 select（选中后校验，失败则回退）
+            if try_native_template_term_select(iframe, desired):
+                time.sleep(0.3)
+                return True
 
-            # 策略2：自定义下拉组件
+            # 策略2：自定义 multi-select 下拉组件
             dropdown = _open_template_term_dropdown(iframe, tab=tab)
             if not dropdown:
                 logger.debug("未找到 Template Term 下拉框或选项")
