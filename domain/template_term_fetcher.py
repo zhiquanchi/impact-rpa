@@ -20,14 +20,10 @@ class TemplateTermOptionsFetcher:
 
     SOURCE_URL = (
         "https://app.impact.com/secure/advertiser/engage/contracts/library/"
-        "view-manage-ios-flow.ihtml?execution=e1s1#"
+        "view-manage-ios-flow.ihtml"
     )
-    LISTEN_TARGET = "myInsertionOrdersJSON.ihtml"
-    API_PATH = (
-        "/secure/nositemesh/insertionorder/myInsertionOrdersJSON.ihtml"
-        "?fql__ion=&fqe__mp=&fqe__ios=&fqe__iot=&fqin__label="
-        "&sortBy=&sortOrder=&tableId=t288&page=1&startIndex=0&pageSize=25"
-    )
+    # 使用正则匹配目标 API，忽略动态参数
+    LISTEN_TARGET_REGEX = r".*myInsertionOrdersJSON\.ihtml.*"
 
     def __init__(
         self,
@@ -50,13 +46,13 @@ class TemplateTermOptionsFetcher:
             self.start_listener(tab)
             listener_started = True
             self.open_source_page(tab)
-            self.request_template_terms_api(tab)
+            # 页面加载过程中会自动请求 myInsertionOrdersJSON.ihtml
+            packet = self.wait_for_target_packet(tab)
+            if not packet:
+                logger.warning("未捕获到 Template Terms 接口响应")
+                return []
 
-            options: list[str] = []
-            for packet in self.wait_for_packets(tab):
-                if self.is_template_term_packet(packet):
-                    options.extend(self.extract_options_from_packet(packet))
-
+            options = self.extract_options_from_packet(packet)
             return self.normalize_options(options)
         finally:
             if listener_started:
@@ -65,6 +61,12 @@ class TemplateTermOptionsFetcher:
 
     def get_tab(self) -> Any:
         """获取当前浏览器 tab。"""
+        # 优先使用 browser 的 latest_tab，如果存在则返回
+        if hasattr(self.browser, "latest_tab"):
+            tab = self.browser.latest_tab
+            if tab:
+                return tab
+        # 兼容旧的 .tab 属性
         tab = getattr(self.browser, "tab", None)
         if not tab:
             raise RuntimeError("浏览器未连接，无法获取 Template Term 选项")
@@ -80,11 +82,14 @@ class TemplateTermOptionsFetcher:
     def start_listener(self, tab: Any) -> None:
         """启动网络监听，必须在打开管理页之前调用。"""
         tab.listen.start(
-            targets=self.LISTEN_TARGET,
+            targets=self.LISTEN_TARGET_REGEX,
+            is_regex=True,
             method="GET",
             res_type=True,
         )
-        logger.debug(f"已启动 Template Terms 接口监听: {self.LISTEN_TARGET}")
+        logger.debug(
+            f"已启动 Template Terms 接口监听，正则模式: {self.LISTEN_TARGET_REGEX}"
+        )
 
     def stop_listener(self, tab: Any) -> None:
         """停止网络监听。"""
@@ -97,51 +102,26 @@ class TemplateTermOptionsFetcher:
         """打开 Template Term 管理页以触发相关网络请求。"""
         logger.info(f"正在打开 Template Terms 管理页: {self.source_url}")
         try:
+            # 使用 get 方法会自动等待页面加载完成
             tab.get(self.source_url, timeout=20)
         except TypeError:
+            # 兼容性处理
             tab.get(self.source_url)
 
-    def request_template_terms_api(self, tab: Any) -> None:
-        """在当前页面上下文中主动请求 Template Terms JSON 接口。"""
-        logger.debug(f"正在主动请求 Template Terms 接口: {self.API_PATH}")
-        script = f"""
-(async () => {{
-  await fetch({json.dumps(self.API_PATH)}, {{
-    credentials: 'include',
-    headers: {{
-      'Accept': 'application/json, text/plain, */*',
-      'X-Requested-With': 'XMLHttpRequest'
-    }}
-  }});
-  return true;
-}})()
-"""
-        tab.run_js(script)
-
-    def wait_for_packets(self, tab: Any) -> list[Any]:
-        """等待并返回管理页加载过程中捕获到的网络包。"""
-        packets: list[Any] = []
+    def wait_for_target_packet(self, tab: Any) -> Any:
+        """等待并返回目标 API 的网络包。"""
         deadline = time.time() + self.listen_timeout
-
         while time.time() < deadline:
-            packet = tab.listen.wait(timeout=0.5, fit_count=False, raise_err=False)
-            if not packet:
-                continue
-
-            if isinstance(packet, list):
-                packets.extend(packet)
-            else:
-                packets.append(packet)
-
-            if any(self.is_template_term_packet(item) for item in packets):
-                break
-
-        return packets
+            # wait 方法会等待一个数据包，超时返回 None
+            packet = tab.listen.wait(timeout=min(1.0, deadline - time.time()))
+            if packet and self.is_template_term_packet(packet):
+                return packet
+        return None
 
     def is_template_term_packet(self, packet: Any) -> bool:
         """判断网络包是否包含 Template Term 选项数据。"""
         url = str(getattr(packet, "url", "") or "")
-        return self.LISTEN_TARGET in url
+        return bool(re.search(self.LISTEN_TARGET_REGEX, url))
 
     def extract_options_from_packet(self, packet: Any) -> list[str]:
         """从单个网络包响应中提取 Template Term 选项。"""
@@ -183,7 +163,9 @@ class TemplateTermOptionsFetcher:
             seen.add(norm)
             normalized_options.append(text)
 
-        logger.info(f"获取到 {len(normalized_options)} 个 Template Terms: {normalized_options}")
+        logger.info(
+            f"获取到 {len(normalized_options)} 个 Template Terms: {normalized_options}"
+        )
         return normalized_options
 
     def restore_page(self, tab: Any, original_url: str) -> None:
