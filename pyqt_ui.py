@@ -39,6 +39,7 @@ from core.config_manager import ConfigManager
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender
+from domain.selectors import MODAL_IFRAME_SELECTOR
 from infra.browser_manager import BrowserManager
 
 
@@ -242,11 +243,32 @@ def validate_positive_float(
         raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
 
 
-class SettingsDialog(QDialog):
-    def __init__(self, snapshot: dict, parent=None):
+class TemplateTermFetchWorker(QThread):
+    """后台获取 Template Term 选项，避免阻塞设置弹窗。"""
+
+    fetch_done = pyqtSignal(list, str)
+
+    def __init__(self, browser: BrowserManager, parent=None):
         super().__init__(parent)
+        self.browser = browser
+
+    def run(self) -> None:
+        try:
+            from domain.template_term_fetcher import TemplateTermOptionsFetcher
+
+            options = TemplateTermOptionsFetcher(self.browser).fetch()
+            self.fetch_done.emit(options, "")
+        except Exception as exc:
+            self.fetch_done.emit([], str(exc))
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, snapshot: dict, browser=None, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+        self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self.setWindowTitle("系统设置")
-        self.setFixedSize(420, 320)
+        self.setFixedSize(420, 400)
 
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
@@ -264,10 +286,27 @@ class SettingsDialog(QDialog):
             bool(snapshot.get("input_partner_groups_tag", True))
         )
 
+        # Template Term 可编辑下拉框 + 获取按钮
+        term_layout = QHBoxLayout()
+        self.term_combo = QComboBox()
+        self.term_combo.setEditable(True)
+        self.term_combo.addItem("")
+        current_term = snapshot.get("template_term", "")
+        if current_term:
+            self.term_combo.addItem(current_term)
+            self.term_combo.setCurrentText(current_term)
+
+        self.fetch_term_btn = QPushButton("获取选项")
+        self.fetch_term_btn.setToolTip("从 Template Term 管理页的网络响应中获取下拉选项")
+        self.fetch_term_btn.clicked.connect(self._fetch_term_options)
+        term_layout.addWidget(self.term_combo, 1)
+        term_layout.addWidget(self.fetch_term_btn)
+
         form_layout.addRow("默认发送数量:", self.max_proposals_input)
         form_layout.addRow("滚动延迟 (秒):", self.scroll_delay_input)
         form_layout.addRow("点击延迟 (秒):", self.click_delay_input)
         form_layout.addRow("弹窗等待时间 (秒):", self.modal_wait_input)
+        form_layout.addRow("Template Term:", term_layout)
         form_layout.addRow("", self.dry_run_check)
         form_layout.addRow("", self.partner_groups_check)
         layout.addLayout(form_layout)
@@ -282,6 +321,64 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
+
+    def _fetch_term_options(self) -> None:
+        """从 Template Term 管理页网络响应获取下拉选项"""
+        if not self.browser or not self.browser.is_connected():
+            QMessageBox.warning(self, "浏览器未连接", "请先连接浏览器后再获取选项。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "获取 Template Term 选项",
+            "程序会打开 Template Term 管理页，并只从网络响应中解析下拉选项。\n"
+            "完成后会尝试返回当前页面。\n\n"
+            "是否继续？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.fetch_term_btn.setEnabled(False)
+        self.fetch_term_btn.setText("获取中...")
+        self._term_fetch_worker = TemplateTermFetchWorker(self.browser, self)
+        self._term_fetch_worker.fetch_done.connect(self._on_term_options_fetched)
+        self._term_fetch_worker.start()
+
+    def _on_term_options_fetched(self, options: list[str], error: str) -> None:
+        self.fetch_term_btn.setEnabled(True)
+        self.fetch_term_btn.setText("获取选项")
+        self._term_fetch_worker = None
+
+        if error:
+            QMessageBox.warning(self, "获取失败", f"获取选项时发生错误：{error}")
+            return
+        if not options:
+            QMessageBox.warning(
+                self,
+                "获取失败",
+                "未能从管理页网络响应获取到 Template Term 选项。\n"
+                "请确认浏览器已登录 Impact，并重试一次。",
+            )
+            return
+
+        current_text = self.term_combo.currentText()
+        self.term_combo.clear()
+        self.term_combo.addItem("")  # 保留空选项
+        for opt in options:
+            self.term_combo.addItem(opt)
+
+        if current_text:
+            idx = self.term_combo.findText(current_text)
+            if idx >= 0:
+                self.term_combo.setCurrentIndex(idx)
+            else:
+                self.term_combo.setCurrentText(current_text)
+        else:
+            self.term_combo.setCurrentIndex(0)
+
+        QMessageBox.information(
+            self, "获取成功", f"已从管理页网络响应获取 {len(options)} 个选项并填充到下拉框。"
+        )
 
     def get_settings(self) -> dict:
         try:
@@ -308,7 +405,9 @@ class SettingsDialog(QDialog):
                 )
             ) from exc
 
-        return settings.model_dump()
+        result = settings.model_dump()
+        result["template_term"] = self.term_combo.currentText()
+        return result
 
     @staticmethod
     def _parse_positive_int(value: str, field_name: str) -> int:
@@ -1214,7 +1313,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, do_connect)
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.settings_service.get_snapshot(), self)
+        dialog = SettingsDialog(self.settings_service.get_snapshot(), self.browser, self)
         if dialog.exec():
             try:
                 snapshot = self.settings_service.get_snapshot()
@@ -1294,11 +1393,11 @@ class MainWindow(QMainWindow):
         term_options: list[str] = []
         if self.browser and self.browser.is_connected() and self.browser.tab:
             try:
-                iframe = self.browser.tab.get_active_iframe()
+                iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=3)
                 if iframe:
                     from domain.template_term_utils import get_template_term_options
 
-                    term_options = get_template_term_options(iframe)
+                    term_options = get_template_term_options(iframe, tab=self.browser.tab)
             except Exception:
                 pass
 
@@ -1316,8 +1415,81 @@ class MainWindow(QMainWindow):
 
         return dialog
 
+    def _ensure_template_term(self) -> bool:
+        """确保 Template Term 已配置，未配置时弹出强制选择对话框"""
+        settings = self.settings_service.get_snapshot()
+        current_term = settings.get("template_term", "")
+        if current_term:
+            return True
+
+        if not self.browser or not self.browser.is_connected():
+            QMessageBox.warning(
+                self,
+                "Template Term 未配置",
+                "当前 Template Term 为空，请先连接浏览器以获取选项列表。",
+            )
+            return False
+
+        term_options: list[str] = []
+        try:
+            iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=3)
+            if iframe:
+                from domain.template_term_utils import get_template_term_options
+
+                term_options = get_template_term_options(iframe, tab=self.browser.tab)
+        except Exception:
+            pass
+
+        if not term_options:
+            QMessageBox.warning(
+                self,
+                "无法获取 Template Term 选项",
+                "未能从浏览器获取 Template Term 选项列表。\n"
+                "请确保已打开 Send Proposal 弹窗，或在「设置」中手动填写。",
+            )
+            return False
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("配置 Template Term")
+        dialog.setMinimumWidth(420)
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+        info = QLabel("Template Term 尚未配置，请在下方选择一个选项：")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #ef4444; font-weight: bold; padding: 5px;")
+        layout.addWidget(info)
+
+        combo = QComboBox()
+        for opt in term_options:
+            combo.addItem(opt)
+        layout.addWidget(combo)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        confirm_btn = QPushButton("确认选择")
+        confirm_btn.setObjectName("primaryBtn")
+        confirm_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(confirm_btn)
+        layout.addLayout(btn_layout)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        selected = combo.currentText()
+        settings["template_term"] = selected
+        self.settings_service.save(settings)
+        self.refresh_settings_inputs()
+        self.log_message(f"已配置 Template Term: {selected}", "info")
+        return True
+
     def start_task(self) -> None:
         if self.worker and self.worker.isRunning():
+            return
+
+        # 强制检查 Template Term
+        if not self._ensure_template_term():
+            self.log_message("Template Term 未配置，任务取消", "warn")
             return
 
         # 显示确认对话框

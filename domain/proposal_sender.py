@@ -1,5 +1,6 @@
 from domain.proposal_modal_service import ProposalModalService
 from domain.selectors import MODAL_IFRAME_SELECTOR
+from domain.template_term_utils import get_template_term_options
 from domain.wait_utils import wait_until
 from domain.template_term_utils import (
     get_template_term_options,
@@ -1356,7 +1357,8 @@ class ProposalSender:
 
     def get_template_term_options(self, iframe) -> list[str]:
         """菜单层可调用的公开方法。"""
-        return get_template_term_options(iframe)
+        tab = self.browser.tab if self.browser else None
+        return get_template_term_options(iframe, tab=tab)
 
     def _select_template_term(self, iframe, term_text: str | None = None) -> bool:
         """选择 Template Term

@@ -22,7 +22,7 @@ class ConfigManager:
             "click_delay": 0.5,
             "modal_wait": 20.0,
             "dry_run": False,
-            "template_term": "Commission Tier Terms",
+            "template_term": "",
             "input_partner_groups_tag": True,
             # 是否输出 Partner Groups 下拉解析与点击的详细调试日志
             "partner_groups_debug_logging": False,
