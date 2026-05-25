@@ -47,12 +47,8 @@ typeCheckingMode = "standard"
 reportMissingTypeStubs = "none"
 exclude = [
     ".venv",
-    "legacy_main.py",
-    "legacy_main.py.bak",
     "scripts/**",
     "domain/**",
     "infra/**",
     "ui/**",
-    "check_port.py",
-    "main.py",
 ]

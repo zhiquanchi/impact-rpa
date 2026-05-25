@@ -22,7 +22,9 @@ from rich.panel import Panel
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from main import BrowserManager, ConfigManager, DatePicker  # noqa: E402
+from core.config_manager import ConfigManager  # noqa: E402
+from domain.date_picker import DatePicker  # noqa: E402
+from infra.browser_manager import BrowserManager  # noqa: E402
 
 IMPACT_URL = (
     "https://app.impact.com/secure/advertiser/discover/radius/fr/partner_discover.ihtml"

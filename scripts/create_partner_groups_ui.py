@@ -25,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from legacy_main import BrowserManager, ConfigManager  # noqa: E402
-
+from core.config_manager import ConfigManager  # noqa: E402
+from infra.browser_manager import BrowserManager  # noqa: E402
 from scripts.batch_create_partner_groups import (  # noqa: E402
     create_group_ui,
     get_partner_group_names_from_myMediaPartnerGroupsJSON,

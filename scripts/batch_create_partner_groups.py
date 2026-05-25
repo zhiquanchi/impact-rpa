@@ -149,9 +149,9 @@ def extract_publisher_group_names_from_response(response_data: dict) -> list[str
 
 
 #
-# 说明：本文件允许被 `app.py` 集成调用。
+# 说明：本文件允许被外部集成调用。
 # 为了避免重复连接浏览器，这里不在模块导入时创建 `Chromium()` 实例，
-# 而是由外部传入已初始化的 `BrowserManager`（复用 `legacy_main.py:235`）。
+# 而是由外部传入已初始化的 `BrowserManager`。
 #
 
 def extract_tags_from_discovery_page(page):
@@ -544,9 +544,10 @@ def main() -> int:
     """
     允许脚本独立运行：初始化 BrowserManager 并执行一次种子逻辑。
     """
-    # 使用 legacy_main 暴露出来的同一类型，避免静态类型检查认为两处 ConfigManager 不同
-    from legacy_main import BrowserManager, ConfigManager
     from rich.console import Console
+
+    from core.config_manager import ConfigManager
+    from infra.browser_manager import BrowserManager
 
     console = Console()
     config = ConfigManager()

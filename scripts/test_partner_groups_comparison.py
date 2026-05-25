@@ -13,18 +13,19 @@ import sys
 from pathlib import Path
 
 # 直接 `python scripts/本文件.py` 时，sys.path[0] 是 scripts/ 目录，找不到 `scripts` 包；
-# 必须在任何 `from scripts...` / `from legacy_main...` 之前把仓库根目录放进 sys.path。
+# 必须在任何 `from scripts...` / `from core...` 之前把仓库根目录放进 sys.path。
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _repo_root_s = str(REPO_ROOT)
 if _repo_root_s not in sys.path:
     sys.path.insert(0, _repo_root_s)
 
 
-# 复用 legacy_main 中的 BrowserManager / ConfigManager
-from legacy_main import BrowserManager, ConfigManager
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
+
+from core.config_manager import ConfigManager
+from infra.browser_manager import BrowserManager
 
 # 复用 batch_create_partner_groups.py 中的解析模型和工具函数
 from scripts.batch_create_partner_groups import (

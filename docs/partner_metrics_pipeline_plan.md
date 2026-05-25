@@ -102,9 +102,9 @@
 
 ---
 
-## 8. 与主程序（`main.py` / `app.py`）如何结合
+## 8. 与主程序（`pyqt_ui.py`）如何结合
 
-仓库里 **`ImpactRPA` 组合根**在 [`app.py`](app.py)：通过 [`core/config_manager.py`](core/config_manager.py) 读写 [`config/settings.json`](config/settings.json)，[`core/config_store.py`](core/config_store.py) 会轮询文件变更，远端同步见 [`core/remote_sync_service.py`](core/remote_sync_service.py)。**Partner 指标抓取**目前是独立脚本 [`scripts/fetch_element_value.py`](scripts/fetch_element_value.py)，产物为仓库根目录的 [`partner_metrics.json`](partner_metrics.json)，与 **`ProposalSender` 发送提案**尚无代码级耦合——集成是指把「门禁 + Vertex 类目」接进**同一套配置与可选入口**，而不是重写浏览器自动化主干。
+仓库里 **主入口**为 [`pyqt_ui.py`](pyqt_ui.py)：通过 [`core/config_manager.py`](core/config_manager.py) 读写 [`config/settings.json`](config/settings.json)，[`core/config_store.py`](core/config_store.py) 会轮询文件变更，远端同步见 [`core/remote_sync_service.py`](core/remote_sync_service.py)。**Partner 指标抓取**目前是独立脚本 [`scripts/fetch_element_value.py`](scripts/fetch_element_value.py)，产物为仓库根目录的 [`partner_metrics.json`](partner_metrics.json)，与 **`ProposalSender` 发送提案**尚无代码级耦合——集成是指把「门禁 + Vertex 类目」接进**同一套配置与可选入口**，而不是重写浏览器自动化主干。
 
 推荐分层（便于测试、也避免 LLM 拖慢 UI 线程）：
 
@@ -113,7 +113,7 @@
 | **采集** | 已有：`fetch_element_value.py` → `partner_metrics.json` | 需浏览器时已登录 Impact；可继续做独立脚本。 |
 | **后处理（计划实现）** | 读 JSON → 阶段 A 门禁 → 阶段 B Vertex（路径/区域/模型/类目均读配置） | 建议做成 **纯 Python 模块**（例如将来放在 `domain/` 或 `core/`），**不依赖** DrissionPage；入参为 `partner_metrics.json` 路径 + 流水线配置 dict。 |
 | **配置** | `partner_metrics_pipeline` 等段落放进 `settings.json`，或单独的 JSON 再在 `settings` 里写 `partner_metrics_pipeline_config_path` | 与现有 `ConfigManager.load_settings()` 一致；若使用远程同步，**密钥路径仅本机**，一般不要推到远端共用。 |
-| **入口**（三选一或多选） | ① **`uv run python scripts/xxx.py`** 只处理后处理（CI/定时/手工）② **主菜单新项**：在菜单里调用同一模块③ 将来若要与发提案联动：在业务明确 **Impact 列表行与 `propertyUrl`/partner 的关联键** 后再在 `ProposalSender` 前置过滤 | ① 最便宜；② 与 `ImpactRPA` 共用配置；③ 需额外对齐数据模型（慎用仅用 `partnerName` 做主键）。 |
+| **入口**（三选一或多选） | ① **`uv run python scripts/xxx.py`** 只处理后处理（CI/定时/手工）② **PyQt 主界面新项**：在 [`pyqt_ui.py`](pyqt_ui.py) 里调用同一模块③ 将来若要与发提案联动：在业务明确 **Impact 列表行与 `propertyUrl`/partner 的关联键** 后再在 `ProposalSender` 前置过滤 | ① 最便宜；② 与主程序共用配置；③ 需额外对齐数据模型（慎用仅用 `partnerName` 做主键）。 |
 
 **典型使用顺序**：浏览器里跑抓取脚本得到 `partner_metrics.json` → 同机配置好密钥路径与 `vertex_*`、`category_taxonomy` → 运行后处理脚本或菜单 → 查看带 `gate_reason` / `category` 的扩展 JSON，再决定哪些 partner 要走「发送 Proposal」或其它运营动作。
 
