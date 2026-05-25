@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTextEdit,
@@ -212,7 +213,7 @@ class FeishuWebhookDialog(QDialog):
 
 
 class TemplateTermFetchWorker(QThread):
-    """后台获取 Template Term 选项，避免阻塞设置弹窗。"""
+    """后台获取 Template Term 选项，避免阻塞主界面。"""
 
     fetch_done = pyqtSignal(list, str)
 
@@ -234,17 +235,12 @@ class SettingsDialog(QDialog):
     def __init__(
         self,
         snapshot: AppSettings,
-        browser=None,
-        config: ConfigManager | None = None,
         parent=None,
     ):
         super().__init__(parent)
-        self.browser = browser
-        self.config = config
         self._base = snapshot
-        self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self.setWindowTitle("系统设置")
-        self.setFixedSize(420, 400)
+        self.setFixedSize(420, 280)
 
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
@@ -260,43 +256,10 @@ class SettingsDialog(QDialog):
         )
         self.partner_groups_check.setChecked(snapshot.input_partner_groups_tag)
 
-        # Template Term 可编辑下拉框 + 获取按钮
-        term_layout = QHBoxLayout()
-        self.term_combo = QComboBox()
-        self.term_combo.setEditable(True)
-        current_term = snapshot.template_term
-        # 从缓存文件加载历史选项
-        cached_terms: list[str] = self._load_cached_terms()
-        if cached_terms:
-            for opt in cached_terms:
-                self.term_combo.addItem(opt)
-            if current_term:
-                idx = self.term_combo.findText(current_term)
-                if idx >= 0:
-                    self.term_combo.setCurrentIndex(idx)
-                else:
-                    self.term_combo.setCurrentText(current_term)
-            else:
-                self.term_combo.setCurrentIndex(0)
-        else:
-            if current_term:
-                self.term_combo.addItem(current_term)
-                self.term_combo.setCurrentText(current_term)
-        # 无配置值且无缓存时禁用下拉框
-        if not current_term and not cached_terms:
-            self.term_combo.setEnabled(False)
-
-        self.fetch_term_btn = QPushButton("获取选项")
-        self.fetch_term_btn.setToolTip("深度分析并获取 Template Term 的所有选项")
-        self.fetch_term_btn.clicked.connect(self._fetch_term_options)
-        term_layout.addWidget(self.term_combo, 1)
-        term_layout.addWidget(self.fetch_term_btn)
-
         form_layout.addRow("默认发送数量:", self.max_proposals_input)
         form_layout.addRow("滚动延迟 (秒):", self.scroll_delay_input)
         form_layout.addRow("点击延迟 (秒):", self.click_delay_input)
         form_layout.addRow("弹窗等待时间 (秒):", self.modal_wait_input)
-        form_layout.addRow("Template Term:", term_layout)
         form_layout.addRow("", self.dry_run_check)
         form_layout.addRow("", self.partner_groups_check)
         layout.addLayout(form_layout)
@@ -311,124 +274,6 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
-
-    def _fetch_term_options(self) -> None:
-        """从 Template Term 管理页网络响应获取下拉选项"""
-        if not self.browser or not self.browser.is_connected():
-            QMessageBox.warning(self, "浏览器未连接", "请先连接浏览器后再获取选项。")
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "获取 Template Term 选项",
-            "会花费一些时间，请耐心等待。是否继续？",
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self.fetch_term_btn.setEnabled(False)
-        self.fetch_term_btn.setText("获取中...")
-
-        # 模态加载对话框
-        self._fetch_progress_dialog = QDialog(self)
-        self._fetch_progress_dialog.setWindowTitle("获取中")
-        self._fetch_progress_dialog.setModal(True)
-        self._fetch_progress_dialog.setFixedSize(320, 100)
-        self._fetch_progress_dialog.setWindowFlags(
-            self._fetch_progress_dialog.windowFlags()
-            & ~Qt.WindowType.WindowCloseButtonHint
-        )
-        progress_layout = QVBoxLayout(self._fetch_progress_dialog)
-        progress_layout.addWidget(
-            QLabel("正在深度分析并获取 Template Term 的所有选项...")
-        )
-        progress_bar = QProgressBar()
-        progress_bar.setMinimum(0)
-        progress_bar.setMaximum(0)  # 不确定进度模式
-        progress_bar.setTextVisible(False)
-        progress_bar.setFixedHeight(20)
-        progress_layout.addWidget(progress_bar)
-
-        self._fetch_progress_dialog.show()
-
-        self._term_fetch_worker = TemplateTermFetchWorker(self.browser, self)
-        self._term_fetch_worker.fetch_done.connect(self._on_term_options_fetched)
-        self._term_fetch_worker.start()
-
-    def _on_term_options_fetched(self, options: list[str], error: str) -> None:
-        # 关闭模态加载对话框
-        if hasattr(self, "_fetch_progress_dialog") and self._fetch_progress_dialog:
-            self._fetch_progress_dialog.close()
-            self._fetch_progress_dialog = None
-
-        self.fetch_term_btn.setEnabled(True)
-        self.fetch_term_btn.setText("获取选项")
-        self._term_fetch_worker = None
-
-        if error:
-            QMessageBox.warning(self, "获取失败", f"获取选项时发生错误：{error}")
-            return
-        if not options:
-            QMessageBox.warning(
-                self,
-                "获取失败",
-                "未能从管理页网络响应获取到 Template Term 选项。\n"
-                "请确认浏览器已登录 Impact，并重试一次。",
-            )
-            return
-
-        # 保存到缓存文件
-        self._save_cached_terms(options)
-
-        current_text = self.term_combo.currentText()
-        self.term_combo.setEnabled(True)
-        self.term_combo.clear()
-        # 保留空选项
-        for opt in options:
-            self.term_combo.addItem(opt)
-
-        if current_text:
-            idx = self.term_combo.findText(current_text)
-            if idx >= 0:
-                self.term_combo.setCurrentIndex(idx)
-            else:
-                self.term_combo.setCurrentText(current_text)
-        else:
-            self.term_combo.setCurrentIndex(0)
-
-        QMessageBox.information(
-            self,
-            "获取成功",
-            f"已从管理页网络响应获取 {len(options)} 个选项并填充到下拉框。",
-        )
-
-    def _get_terms_file_path(self) -> Path:
-        """获取 Template Terms 缓存文件路径"""
-        if self.config is not None:
-            return Path(self.config.template_terms_file)
-        return Path(ConfigManager().template_terms_file)
-
-    def _load_cached_terms(self) -> list[str]:
-        """从缓存文件加载 Template Term 选项列表"""
-        try:
-            path = self._get_terms_file_path()
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return data.get("terms", [])
-        except Exception:
-            pass
-        return []
-
-    def _save_cached_terms(self, terms: list[str]) -> None:
-        """将 Template Term 选项列表保存到缓存文件"""
-        try:
-            path = self._get_terms_file_path()
-            path.write_text(
-                json.dumps({"terms": terms}, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
 
     def get_settings(self) -> AppSettings:
         try:
@@ -455,12 +300,7 @@ class SettingsDialog(QDialog):
                 )
             ) from exc
 
-        return self._base.model_copy(
-            update={
-                **validated.model_dump(),
-                "template_term": self.term_combo.currentText(),
-            }
-        )
+        return self._base.model_copy(update=validated.model_dump())
 
     @staticmethod
     def _parse_positive_int(value: str, field_name: str) -> int:
@@ -819,6 +659,29 @@ class TemplateDialog(QDialog):
         self.load_templates()
 
 
+class TemplatePreviewDialog(QDialog):
+    """展示当前激活模板的完整内容。"""
+
+    def __init__(self, name: str, content: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"模板预览 - {name}")
+        self.setMinimumSize(480, 360)
+
+        layout = QVBoxLayout(self)
+        preview = QTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText(content or "(空模板)")
+        preview.setObjectName("tplPreview")
+        layout.addWidget(preview)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+
 class BrowserProbeWorker(QThread):
     """后台浏览器连接检测线程"""
 
@@ -954,7 +817,7 @@ class MainWindow(QMainWindow):
         # 限制最小宽度
         self.setMinimumWidth(900)
         # 限制最小高度
-        self.setMinimumHeight(600)
+        self.setMinimumHeight(720)
 
         self.setStyleSheet(self.get_stylesheet())
 
@@ -974,6 +837,11 @@ class MainWindow(QMainWindow):
         self._startup_connect_done = False
         self._lock_widgets: list = []
         self._syncing_notification_ui = False
+        self._syncing_template_term_ui = False
+        self._term_fetch_worker: TemplateTermFetchWorker | None = None
+        self._fetch_progress_dialog: QDialog | None = None
+        self._active_template_name = "未配置"
+        self._active_template_content = ""
 
         self.bridge_log.connect(self.log_message)
         self.output_bridge = OutputBridge.for_callback(
@@ -1094,23 +962,15 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(nav_layout)
 
         stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(12)
         self.stat_sent_label = QLabel("0")
-        self.stat_sent_label.setObjectName("statValue")
-        stats_layout.addWidget(
-            self.create_stat_card("今日已发送", self.stat_sent_label, "Send")
-        )
+        self.stat_sent_label.setObjectName("statValueCompact")
+        sent_card = self.create_compact_stat_card("今日已发送", self.stat_sent_label, "Send")
+        sent_card.setMaximumWidth(132)
+        stats_layout.addWidget(sent_card, 0)
 
-        self.stat_tpl_label = QLabel("-")
-        self.stat_tpl_label.setObjectName("statValue")
-        stats_layout.addWidget(
-            self.create_stat_card("当前激活模板", self.stat_tpl_label, "Tpl")
-        )
-
-        self.stat_term_label = QLabel("-")
-        self.stat_term_label.setObjectName("statValue")
-        stats_layout.addWidget(
-            self.create_stat_card("Template Term", self.stat_term_label, "Term")
-        )
+        stats_layout.addWidget(self.create_active_template_card(), 1)
+        stats_layout.addWidget(self.create_template_term_card(), 2)
         main_layout.addLayout(stats_layout)
 
         notif_group = QGroupBox("通知配置")
@@ -1181,9 +1041,20 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 10, 0)
 
         task_group = QGroupBox("执行任务 (Send Proposals)")
+        task_group.setObjectName("taskGroup")
+        task_group.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        task_group.setMinimumHeight(230)
         task_layout = QVBoxLayout(task_group)
+        task_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
 
         self.tab_widget = QTabWidget()
+        self.tab_widget.setMinimumHeight(150)
+        self.tab_widget.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding
+        )
+        self.tab_widget.setUsesScrollButtons(True)
         self.tab_widget.setStyleSheet("""
             QTabBar::tab {
                 background-color: #34495E;
@@ -1235,24 +1106,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self.start_task)
         task_layout.addWidget(self.start_btn)
 
-        left_layout.addWidget(task_group)
-
-        tpl_group = QGroupBox("当前留言模板")
-        tpl_layout = QVBoxLayout(tpl_group)
-
-        header_layout = QHBoxLayout()
-        manage_tpl_btn = QPushButton("管理所有模板")
-        manage_tpl_btn.clicked.connect(self.open_template_manager)
-        header_layout.addStretch()
-        header_layout.addWidget(manage_tpl_btn)
-        tpl_layout.addLayout(header_layout)
-
-        self.tpl_preview = QTextEdit()
-        self.tpl_preview.setReadOnly(True)
-        self.tpl_preview.setObjectName("tplPreview")
-        tpl_layout.addWidget(self.tpl_preview)
-
-        left_layout.addWidget(tpl_group)
+        left_layout.addWidget(task_group, 1)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -1279,26 +1133,277 @@ class MainWindow(QMainWindow):
         content_splitter.setSizes([620, 420])
         main_layout.addWidget(content_splitter, 1)
 
-    def create_stat_card(self, title: str, value_label: QLabel, icon: str) -> QFrame:
+    def create_compact_stat_card(
+        self, title: str, value_label: QLabel, icon: str
+    ) -> QFrame:
         card = QFrame()
-        card.setObjectName("statCard")
+        card.setObjectName("statCardCompact")
         layout = QHBoxLayout(card)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
 
         icon_label = QLabel(icon)
-        icon_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        icon_label.setFixedWidth(48)
+        icon_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        icon_label.setFixedWidth(32)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
         title_label = QLabel(title)
-        title_label.setObjectName("statTitle")
+        title_label.setObjectName("statTitleCompact")
         text_layout.addWidget(title_label)
         text_layout.addWidget(value_label)
 
         layout.addWidget(icon_label)
         layout.addLayout(text_layout)
-        layout.addStretch()
         return card
+
+    def create_active_template_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("statCard")
+        layout = QVBoxLayout(card)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        icon_label = QLabel("Tpl")
+        icon_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        icon_label.setFixedWidth(48)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label = QLabel("当前激活模板")
+        title_label.setObjectName("statTitle")
+        header.addWidget(icon_label)
+        header.addWidget(title_label)
+        header.addStretch()
+
+        manage_tpl_btn = QPushButton("管理")
+        manage_tpl_btn.setToolTip("管理所有模板")
+        manage_tpl_btn.clicked.connect(self.open_template_manager)
+        header.addWidget(manage_tpl_btn)
+        layout.addLayout(header)
+
+        self.tpl_summary_btn = QPushButton("未配置\n(空模板，点击查看)")
+        self.tpl_summary_btn.setObjectName("tplSummaryBtn")
+        self.tpl_summary_btn.setFlat(True)
+        self.tpl_summary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tpl_summary_btn.setToolTip("点击查看完整模板内容")
+        self.tpl_summary_btn.clicked.connect(self._show_template_preview)
+        layout.addWidget(self.tpl_summary_btn)
+        return card
+
+    @staticmethod
+    def _truncate_template_preview(content: str, max_len: int = 28) -> str:
+        compact = " ".join((content or "").split())
+        if not compact:
+            return "(空模板，点击查看)"
+        if len(compact) <= max_len:
+            return compact
+        return compact[: max_len - 1] + "…"
+
+    def _show_template_preview(self) -> None:
+        if self._active_template_name == "未配置" and not self._active_template_content:
+            QMessageBox.information(self, "模板预览", "当前未配置激活模板。")
+            return
+        TemplatePreviewDialog(
+            self._active_template_name,
+            self._active_template_content,
+            self,
+        ).exec()
+
+    def create_template_term_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("statCard")
+        layout = QVBoxLayout(card)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        icon_label = QLabel("Term")
+        icon_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        icon_label.setFixedWidth(48)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label = QLabel("Template Term")
+        title_label.setObjectName("statTitle")
+        header.addWidget(icon_label)
+        header.addWidget(title_label)
+        header.addStretch()
+        layout.addLayout(header)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+        self.term_combo = QComboBox()
+        self.term_combo.setEditable(True)
+        self.term_combo.setMinimumWidth(160)
+        self.term_combo.setToolTip("选择或输入 Template Term")
+        self.term_combo.activated.connect(self._save_template_term_from_combo)
+        line_edit = self.term_combo.lineEdit()
+        if line_edit is not None:
+            line_edit.editingFinished.connect(self._save_template_term_from_combo)
+
+        self.fetch_term_btn = QPushButton("获取")
+        self.fetch_term_btn.setToolTip("深度分析并获取 Template Term 的所有选项")
+        self.fetch_term_btn.clicked.connect(self._fetch_term_options)
+
+        controls.addWidget(self.term_combo, 1)
+        controls.addWidget(self.fetch_term_btn)
+        layout.addLayout(controls)
+        return card
+
+    def _get_terms_file_path(self) -> Path:
+        return Path(self.config.template_terms_file)
+
+    def _load_cached_terms(self) -> list[str]:
+        try:
+            path = self._get_terms_file_path()
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                terms = data.get("terms", [])
+                if isinstance(terms, list):
+                    return [str(term) for term in terms if str(term).strip()]
+        except Exception:
+            pass
+        return []
+
+    def _save_cached_terms(self, terms: list[str]) -> None:
+        try:
+            path = self._get_terms_file_path()
+            path.write_text(
+                json.dumps({"terms": terms}, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _refresh_template_term_combo(self) -> None:
+        settings = self.settings_service.get_snapshot()
+        current_term = settings.template_term
+        cached_terms = self._load_cached_terms()
+
+        self._syncing_template_term_ui = True
+        try:
+            self.term_combo.blockSignals(True)
+            self.term_combo.clear()
+            seen: set[str] = set()
+            for opt in cached_terms:
+                if opt not in seen:
+                    self.term_combo.addItem(opt)
+                    seen.add(opt)
+            if current_term and current_term not in seen:
+                self.term_combo.addItem(current_term)
+
+            if current_term:
+                idx = self.term_combo.findText(current_term)
+                if idx >= 0:
+                    self.term_combo.setCurrentIndex(idx)
+                else:
+                    self.term_combo.setCurrentText(current_term)
+            elif self.term_combo.count() > 0:
+                self.term_combo.setCurrentIndex(0)
+
+            self.term_combo.setEnabled(bool(current_term or cached_terms))
+        finally:
+            self.term_combo.blockSignals(False)
+            self._syncing_template_term_ui = False
+
+    def _save_template_term_from_combo(self) -> None:
+        if self._syncing_template_term_ui:
+            return
+        term = self.term_combo.currentText().strip()
+        settings = self.settings_service.get_snapshot()
+        if settings.template_term == term:
+            return
+        self.settings_service.save(settings.model_copy(update={"template_term": term}))
+        if term:
+            self.log_message(f"已更新 Template Term: {term}", "info")
+        else:
+            self.log_message("已清空 Template Term", "warn")
+
+    def _fetch_term_options(self) -> None:
+        if not self.browser or not self.browser.is_connected():
+            QMessageBox.warning(self, "浏览器未连接", "请先连接浏览器后再获取选项。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "获取 Template Term 选项",
+            "会花费一些时间，请耐心等待。是否继续？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.fetch_term_btn.setEnabled(False)
+        self.fetch_term_btn.setText("获取中...")
+
+        self._fetch_progress_dialog = QDialog(self)
+        self._fetch_progress_dialog.setWindowTitle("获取中")
+        self._fetch_progress_dialog.setModal(True)
+        self._fetch_progress_dialog.setFixedSize(320, 100)
+        self._fetch_progress_dialog.setWindowFlags(
+            self._fetch_progress_dialog.windowFlags()
+            & ~Qt.WindowType.WindowCloseButtonHint
+        )
+        progress_layout = QVBoxLayout(self._fetch_progress_dialog)
+        progress_layout.addWidget(
+            QLabel("正在深度分析并获取 Template Term 的所有选项...")
+        )
+        progress_bar = QProgressBar()
+        progress_bar.setMinimum(0)
+        progress_bar.setMaximum(0)
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(20)
+        progress_layout.addWidget(progress_bar)
+        self._fetch_progress_dialog.show()
+
+        self._term_fetch_worker = TemplateTermFetchWorker(self.browser, self)
+        self._term_fetch_worker.fetch_done.connect(self._on_term_options_fetched)
+        self._term_fetch_worker.start()
+
+    def _on_term_options_fetched(self, options: list[str], error: str) -> None:
+        if self._fetch_progress_dialog is not None:
+            self._fetch_progress_dialog.close()
+            self._fetch_progress_dialog = None
+
+        self.fetch_term_btn.setEnabled(True)
+        self.fetch_term_btn.setText("获取")
+        self._term_fetch_worker = None
+
+        if error:
+            QMessageBox.warning(self, "获取失败", f"获取选项时发生错误：{error}")
+            return
+        if not options:
+            QMessageBox.warning(
+                self,
+                "获取失败",
+                "未能从管理页网络响应获取到 Template Term 选项。\n"
+                "请确认浏览器已登录 Impact，并重试一次。",
+            )
+            return
+
+        self._save_cached_terms(options)
+        current_text = self.term_combo.currentText()
+        self._syncing_template_term_ui = True
+        try:
+            self.term_combo.blockSignals(True)
+            self.term_combo.setEnabled(True)
+            self.term_combo.clear()
+            for opt in options:
+                self.term_combo.addItem(opt)
+            if current_text:
+                idx = self.term_combo.findText(current_text)
+                if idx >= 0:
+                    self.term_combo.setCurrentIndex(idx)
+                else:
+                    self.term_combo.setCurrentText(current_text)
+            else:
+                self.term_combo.setCurrentIndex(0)
+        finally:
+            self.term_combo.blockSignals(False)
+            self._syncing_template_term_ui = False
+
+        self._save_template_term_from_combo()
+        QMessageBox.information(
+            self,
+            "获取成功",
+            f"已从管理页网络响应获取 {len(options)} 个选项并填充到下拉框。",
+        )
 
     def refresh_all(self) -> None:
         self.refresh_templates()
@@ -1310,11 +1415,18 @@ class MainWindow(QMainWindow):
     def refresh_templates(self) -> None:
         active_tpl = self.template_manager.get_active_template_info()
         if active_tpl:
-            self.stat_tpl_label.setText(active_tpl.get("name", "未命名"))
-            self.tpl_preview.setPlainText(active_tpl.get("content", ""))
+            name = str(active_tpl.get("name", "") or "未命名")
+            content = str(active_tpl.get("content", "") or "")
         else:
-            self.stat_tpl_label.setText("未配置")
-            self.tpl_preview.setPlainText("")
+            name = "未配置"
+            content = ""
+
+        self._active_template_name = name
+        self._active_template_content = content
+        preview = self._truncate_template_preview(content)
+        self.tpl_summary_btn.setText(f"{name}\n{preview}")
+        tooltip = content.strip() or "当前未配置模板内容"
+        self.tpl_summary_btn.setToolTip(f"点击查看完整模板内容\n\n{tooltip[:200]}")
 
     def refresh_settings_inputs(self) -> None:
         settings = self.settings_service.get_snapshot()
@@ -1322,9 +1434,7 @@ class MainWindow(QMainWindow):
         for widget in (self.list_max_count_input, self.search_max_count_input):
             if not widget.text().strip() or widget.text().strip() == "10":
                 widget.setText(default_max)
-        term_text = settings.template_term or "-"
-        self.stat_term_label.setText(term_text)
-        self.stat_term_label.setToolTip(term_text)
+        self._refresh_template_term_combo()
         self._sync_notification_ui_from_settings()
 
     def _get_notification_settings(self) -> NotificationSettings:
@@ -1563,9 +1673,7 @@ class MainWindow(QMainWindow):
             self.output_bridge.emit(f"连接浏览器时发生错误: {error_message}", "error")
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(
-            self.settings_service.get_snapshot(), self.browser, self.config, self
-        )
+        dialog = SettingsDialog(self.settings_service.get_snapshot(), self)
         if dialog.exec():
             try:
                 if not self.settings_service.save(dialog.get_settings()):
@@ -1696,7 +1804,7 @@ class MainWindow(QMainWindow):
                 self,
                 "无法获取 Template Term 选项",
                 "未能从浏览器获取 Template Term 选项列表。\n"
-                "请确保已打开 Send Proposal 弹窗，或在「设置」中手动填写。",
+                "请确保已打开 Send Proposal 弹窗，或在顶部 Template Term 下拉框中手动填写。",
             )
             return False
 
@@ -1731,6 +1839,7 @@ class MainWindow(QMainWindow):
         self.settings_service.save(
             settings.model_copy(update={"template_term": selected})
         )
+        self._refresh_template_term_combo()
         self.refresh_settings_inputs()
         self.log_message(f"已配置 Template Term: {selected}", "info")
         return True
@@ -1765,6 +1874,7 @@ class MainWindow(QMainWindow):
             self.settings_service.save(
                 settings.model_copy(update={"template_term": selected_term})
             )
+            self._refresh_template_term_combo()
             self.log_message(f"已更新 Template Term 为: {selected_term}", "info")
 
         self.log_message(
@@ -1867,15 +1977,44 @@ class MainWindow(QMainWindow):
             border-radius: 8px;
             padding: 10px;
         }
+        QFrame#statCardCompact {
+            background-color: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 6px 8px;
+        }
         QLabel#statTitle {
             color: #64748b;
             font-size: 12px;
+            font-weight: bold;
+        }
+        QLabel#statTitleCompact {
+            color: #64748b;
+            font-size: 11px;
             font-weight: bold;
         }
         QLabel#statValue {
             color: #1e293b;
             font-size: 18px;
             font-weight: bold;
+        }
+        QLabel#statValueCompact {
+            color: #1e293b;
+            font-size: 15px;
+            font-weight: bold;
+        }
+        QPushButton#tplSummaryBtn {
+            background-color: transparent;
+            color: #334155;
+            border: 1px dashed #cbd5e1;
+            border-radius: 6px;
+            padding: 6px 8px;
+            text-align: left;
+            font-size: 12px;
+        }
+        QPushButton#tplSummaryBtn:hover {
+            background-color: #f8fafc;
+            border-color: #94a3b8;
         }
         QGroupBox {
             background-color: white;
@@ -1889,6 +2028,9 @@ class MainWindow(QMainWindow):
             subcontrol-origin: margin;
             left: 15px;
             padding: 0 5px;
+        }
+        QGroupBox#taskGroup {
+            min-height: 230px;
         }
         QPushButton {
             background-color: #f1f5f9;
