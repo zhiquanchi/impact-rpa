@@ -1527,9 +1527,28 @@ class MainWindow(QMainWindow):
         else:
             self.log_message("已清空 Template Term", "warn")
 
+    def _is_browser_on_login_page(self) -> bool:
+        tab = getattr(self.browser, "tab", None) if self.browser else None
+        if tab is None:
+            return False
+        try:
+            url = (tab.url or "").lower()
+        except Exception:
+            return False
+        return "login.user" in url
+
     def _fetch_term_options(self) -> None:
         if not self.browser or not self.browser.is_connected():
             QMessageBox.warning(self, "浏览器未连接", "请先连接浏览器后再获取选项。")
+            return
+
+        if self._is_browser_on_login_page():
+            QMessageBox.warning(
+                self,
+                "请先登录 Impact",
+                "当前浏览器标签页仍在登录页\n"
+                "请先在浏览器中完成登录，再点击「获取」。",
+            )
             return
 
         reply = QMessageBox.question(
@@ -1583,7 +1602,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "获取失败",
-                "未能从管理页网络响应获取到 Template Term 选项。\n"
+                "未能获取到 Template Term 选项。\n"
                 "请确认浏览器已登录 Impact，并重试一次。",
             )
             return

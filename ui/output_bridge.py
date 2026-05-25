@@ -141,6 +141,12 @@ class OutputBridge:
         if self._loguru_handler_id is not None:
             return self._loguru_handler_id
 
+        # loguru 导入后自带 id=0 的 stderr handler；GUI 模式下只保留文件 + 界面 sink
+        try:
+            logger.remove(0)
+        except ValueError:
+            pass
+
         bridge = self
 
         def sink(message) -> None:
