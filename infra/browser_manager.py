@@ -3,18 +3,29 @@ import os
 import re
 import time
 from datetime import datetime
+from typing import Protocol
+
 from loguru import logger
 from DrissionPage import Chromium
 from DrissionPage.errors import ElementNotFoundError, PageDisconnectedError, ContextLostError
-from loguru._logger import Logger
 
 from exception_handler import exception_handler
+
+
+class LogSink(Protocol):
+    def info(self, message: str) -> None: ...
+
+    def warning(self, message: str) -> None: ...
+
+    def error(self, message: str) -> None: ...
+
+    def debug(self, message: str) -> None: ...
 
 
 class BrowserManager:
     """浏览器管理类，负责浏览器连接和元素操作"""
 
-    def __init__(self, log: Logger, config=None):
+    def __init__(self, log: LogSink, config=None):
         self.browser = None
         self.tab = None
         self.logger = log

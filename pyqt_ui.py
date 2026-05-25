@@ -1,15 +1,12 @@
+from prompt_toolkit.validation import ValidationError
+from pydantic import BaseModel, Field, field_validator
 import html
-import io
 import json
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import IO, cast
 
-from loguru import logger
-from loguru._logger import Logger as LoguruLogger
-from pydantic import BaseModel, Field, ValidationError, field_validator
 from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
@@ -34,14 +31,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from rich.console import Console
-
 from core.config_manager import ConfigManager
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
 from infra.browser_manager import BrowserManager
+from ui.output_bridge import OutputBridge
 
 
 def count_today_sent(config: ConfigManager) -> int:
@@ -84,24 +80,6 @@ def count_today_sent(config: ConfigManager) -> int:
     return count
 
 
-def infer_log_level(message: str) -> str:
-    lowered = message.lower()
-    if any(
-        token in lowered for token in ("失败", "异常", "错误", "[err]", "traceback")
-    ):
-        return "error"
-    if any(
-        token in lowered
-        for token in ("警告", "超时", "跳过", "停止请求", "[skip]", "warn")
-    ):
-        return "warn"
-    if any(token in lowered for token in ("完成", "成功", "[ok]", "✓")):
-        return "success"
-    if any(token in lowered for token in ("开始", "准备", "目标", "处理中")):
-        return "highlight"
-    return "info"
-
-
 def has_browser_process() -> bool:
     try:
         import psutil
@@ -126,33 +104,6 @@ def has_browser_process() -> bool:
             return False
 
     return False
-
-
-class QtLogStream(io.TextIOBase):
-    def __init__(self, emit_line):
-        super().__init__()
-        self.emit_line = emit_line
-        self._buffer = ""
-
-    def write(self, text: str) -> int:
-        if not text:
-            return 0
-        self._buffer += text.replace("\r", "")
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            line = line.strip()
-            if line:
-                self.emit_line(line)
-        return len(text)
-
-    def flush(self) -> None:
-        pending = self._buffer.strip()
-        if pending:
-            self.emit_line(pending)
-        self._buffer = ""
-
-    def isatty(self) -> bool:
-        return False
 
 
 class SettingsFormModel(BaseModel):
@@ -877,13 +828,13 @@ class BrowserProbeWorker(QThread):
 
 
 class TaskWorker(QThread):
-    log_line = pyqtSignal(str)
     task_done = pyqtSignal(int, bool, str)
 
     def __init__(
         self,
         browser: BrowserManager,
         config: ConfigManager,
+        output_bridge: OutputBridge,
         mode: str,
         max_count: int,
         start_value: int,
@@ -892,6 +843,7 @@ class TaskWorker(QThread):
         super().__init__(parent)
         self.browser = browser
         self.config = config
+        self.output_bridge = output_bridge
         self.mode = mode
         self.max_count = max_count
         self.start_value = start_value
@@ -905,43 +857,40 @@ class TaskWorker(QThread):
 
     def run(self) -> None:
         try:
-            template_manager = TemplateManager(self.config)
-            log_stream = QtLogStream(self.log_line.emit)
-            console = Console(
-                file=cast(IO[str], log_stream),
-                force_terminal=False,
-                color_system=None,
-                width=120,
-            )
+            with self.output_bridge.scoped_redirect():
+                template_manager = TemplateManager(self.config)
+                console = self.output_bridge.create_console()
 
-            self.proposal_sender = ProposalSender(
-                self.browser, template_manager, console, self.config
-            )
-            if self._stop_requested:
-                self.proposal_sender.request_stop()
-
-            template = template_manager.get_active_template()
-            if self.mode == "list":
-                result = self.proposal_sender.send_proposals(
-                    self.max_count,
-                    template,
-                    start_index=self.start_value,
-                    skip_ready_prompt=True,
+                self.proposal_sender = ProposalSender(
+                    self.browser, template_manager, console, self.config
                 )
-            else:
-                result = self.proposal_sender.send_proposals_creator_search(
-                    max_count=self.max_count,
-                    start_row=self.start_value,
-                    template_content=template,
-                )
+                if self._stop_requested:
+                    self.proposal_sender.request_stop()
 
-            log_stream.flush()
+                template = template_manager.get_active_template()
+                if self.mode == "list":
+                    result = self.proposal_sender.send_proposals(
+                        self.max_count,
+                        template,
+                        start_index=self.start_value,
+                        skip_ready_prompt=True,
+                    )
+                else:
+                    result = self.proposal_sender.send_proposals_creator_search(
+                        max_count=self.max_count,
+                        start_row=self.start_value,
+                        template_content=template,
+                    )
+
+                self.output_bridge.flush_stdio()
             self.task_done.emit(result.clicked_count, result.completed_all, "")
         except Exception as e:
             self.task_done.emit(0, False, str(e))
 
 
 class MainWindow(QMainWindow):
+    bridge_log = pyqtSignal(str, str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Impact RPA - PyQt 桌面版")
@@ -963,6 +912,12 @@ class MainWindow(QMainWindow):
         self._lock_widgets: list = []
         self._highlight_animation: QTimer | None = None
 
+        self.bridge_log.connect(self.log_message)
+        self.output_bridge = OutputBridge.for_callback(
+            lambda message, level: self.bridge_log.emit(message, level)
+        )
+        self.output_bridge.install_loguru_sink()
+
         self.init_ui()
         self._install_event_filters()
         self.refresh_all()
@@ -970,6 +925,10 @@ class MainWindow(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_runtime_state)
         self.refresh_timer.start(10000)
+
+    def closeEvent(self, event) -> None:
+        self.output_bridge.uninstall_loguru_sink()
+        super().closeEvent(event)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ty:ignore[invalid-method-override]
         """拦截被锁定控件的点击事件"""
@@ -1077,12 +1036,6 @@ class MainWindow(QMainWindow):
         self.ensurePolished()
         self.activateWindow()
         self.raise_()
-
-    @staticmethod
-    def _build_silent_console() -> Console:
-        return Console(
-            file=io.StringIO(), force_terminal=False, color_system=None, width=120
-        )
 
     def init_ui(self) -> None:
         central_widget = QWidget()
@@ -1369,10 +1322,12 @@ class MainWindow(QMainWindow):
 
         def do_connect():
             try:
-                self.browser = BrowserManager(cast(LoguruLogger, logger), self.config)
+                self.browser = BrowserManager(
+                    self.output_bridge.create_logger(), self.config
+                )
                 if self.browser.init() and self.browser.is_connected():
                     self.update_browser_status(True)
-                    logger.info("浏览器连接成功")
+                    self.output_bridge.emit("浏览器连接成功", "success")
                 else:
                     self.update_browser_status(False)
                     QMessageBox.warning(
@@ -1380,11 +1335,11 @@ class MainWindow(QMainWindow):
                         "连接失败",
                         "无法连接浏览器，请确认 Chrome/Edge 已打开并已登录 Impact",
                     )
-                    logger.warning("浏览器连接失败")
+                    self.output_bridge.emit("浏览器连接失败", "error")
             except Exception as e:
                 self.update_browser_status(False)
                 QMessageBox.warning(self, "连接错误", f"连接浏览器时发生错误: {e}")
-                logger.error(f"连接浏览器时发生错误: {e}")
+                self.output_bridge.emit(f"连接浏览器时发生错误: {e}", "error")
 
         QTimer.singleShot(100, do_connect)
 
@@ -1601,9 +1556,14 @@ class MainWindow(QMainWindow):
         )
 
         self.worker = TaskWorker(
-            self.browser, self.config, mode, max_count, start_value, self
+            self.browser,
+            self.config,
+            self.output_bridge,
+            mode,
+            max_count,
+            start_value,
+            self,
         )
-        self.worker.log_line.connect(self.handle_worker_log)
         self.worker.task_done.connect(self.handle_task_done)
         self.worker.start()
 
@@ -1611,9 +1571,6 @@ class MainWindow(QMainWindow):
         self.start_btn.setText("执行中...")
         self.stop_btn.setEnabled(True)
         self.stop_btn.setText("强制停止")
-
-    def handle_worker_log(self, message: str) -> None:
-        self.log_message(message, infer_log_level(message))
 
     def stop_task(self) -> None:
         if not self.worker or not self.worker.isRunning():

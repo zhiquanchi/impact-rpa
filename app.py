@@ -1,5 +1,4 @@
 import questionary
-from rich.console import Console
 from rich.panel import Panel
 
 from core.config_manager import ConfigManager
@@ -11,15 +10,15 @@ from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender, SendProposalsResult
 from infra.browser_manager import BrowserManager
 from ui.menu_ui import MenuUI
-
+from ui.output_bridge import OutputBridge
 
 class ImpactRPA:
     """Impact RPA 主应用类（组合根）。"""
 
     def __init__(self):
-        self.console = Console()
+        self.output_bridge = OutputBridge.for_terminal()
+        self.console = self.output_bridge.create_console()
         self.config = ConfigManager()
-
         # 初始化远程同步服务
         self.uid = get_machine_uid()
         initial_settings = self.config.load_settings()
@@ -41,7 +40,7 @@ class ImpactRPA:
         self.config_store.start_watching(interval_s=0.8)
         self.settings = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
-        self.browser = BrowserManager(self.console, self.config)
+        self.browser = BrowserManager(self.output_bridge.create_logger(), self.config)
         self.proposal_sender = ProposalSender(
             self.browser,
             self.template_manager,
