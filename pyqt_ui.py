@@ -50,7 +50,7 @@ from infra.browser_manager import BrowserManager
 from ui.output_bridge import OutputBridge
 
 FEISHU_WEBHOOK_HELP_URL = (
-    "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot"
+    "https://q6y68vu0j8.feishu.cn/wiki/UMQWwra0piW3O1k9yjOcOXsOnGg#share-JE8XdEXWho2mZlxZovNcjiC7n4c"
 )
 
 
