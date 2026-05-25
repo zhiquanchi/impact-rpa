@@ -2,13 +2,14 @@ import html
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont, QMouseEvent, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -212,6 +213,161 @@ class FeishuWebhookDialog(QDialog):
         return self.url_input.text().strip()
 
 
+class NotificationSettingsDialog(QDialog):
+    """通知配置弹窗。"""
+
+    def __init__(self, main_window: "MainWindow", parent=None):
+        super().__init__(parent or main_window)
+        self._main = main_window
+        self._syncing = False
+        self.setWindowTitle("通知配置")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self.notif_enabled_check = QCheckBox("启用通知")
+        layout.addWidget(self.notif_enabled_check)
+
+        channel_group = QGroupBox("通知渠道")
+        channel_layout = QVBoxLayout(channel_group)
+        channel_layout.setSpacing(8)
+
+        help_link = QLabel(
+            f'<a href="{FEISHU_WEBHOOK_HELP_URL}">'
+            "如何配置飞书自定义机器人 Webhook</a>"
+        )
+        help_link.setOpenExternalLinks(True)
+        help_link.setWordWrap(True)
+        channel_layout.addWidget(help_link)
+
+        channel_row = QHBoxLayout()
+        channel_row.setSpacing(12)
+        self.notif_feishu_check = QCheckBox("飞书")
+        self.notif_feishu_edit_btn = QPushButton("编辑 Webhook")
+        self.notif_feishu_edit_btn.setEnabled(False)
+        self.notif_feishu_edit_btn.clicked.connect(self._edit_feishu_webhook)
+        channel_row.addWidget(self.notif_feishu_check)
+        channel_row.addWidget(self.notif_feishu_edit_btn)
+        channel_row.addStretch()
+        channel_layout.addLayout(channel_row)
+        self.notif_channel_group = channel_group
+        layout.addWidget(channel_group)
+
+        trigger_group = QGroupBox("发送时机")
+        trigger_layout = QHBoxLayout(trigger_group)
+        trigger_layout.setSpacing(16)
+        self.notif_on_complete_check = QCheckBox("任务完成时")
+        self.notif_on_error_check = QCheckBox("任务失败时")
+        self.notif_on_early_exit_check = QCheckBox("任务提前结束时")
+        trigger_layout.addWidget(self.notif_on_complete_check)
+        trigger_layout.addWidget(self.notif_on_error_check)
+        trigger_layout.addWidget(self.notif_on_early_exit_check)
+        trigger_layout.addStretch()
+        self.notif_trigger_group = trigger_group
+        layout.addWidget(trigger_group)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.setObjectName("primaryBtn")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        self.notif_enabled_check.stateChanged.connect(self._on_master_toggled)
+        self.notif_on_complete_check.stateChanged.connect(self._on_trigger_changed)
+        self.notif_on_error_check.stateChanged.connect(self._on_trigger_changed)
+        self.notif_on_early_exit_check.stateChanged.connect(self._on_trigger_changed)
+        self.notif_feishu_check.stateChanged.connect(self._on_feishu_toggled)
+
+        self._sync_from_settings()
+
+    def _sync_from_settings(self) -> None:
+        notif = self._main._get_notification_settings()
+        feishu = get_feishu_channel(notif)
+
+        self._syncing = True
+        try:
+            self.notif_enabled_check.setChecked(notif.enabled)
+            self.notif_on_complete_check.setChecked(notif.on_complete)
+            self.notif_on_error_check.setChecked(notif.on_error)
+            self.notif_on_early_exit_check.setChecked(notif.on_early_exit)
+            self.notif_feishu_check.setChecked(feishu.enabled)
+            self.notif_channel_group.setEnabled(notif.enabled)
+            self.notif_trigger_group.setEnabled(notif.enabled)
+            self.notif_feishu_edit_btn.setEnabled(
+                notif.enabled and self.notif_feishu_check.isChecked()
+            )
+        finally:
+            self._syncing = False
+
+    def _on_master_toggled(self, _state: int) -> None:
+        if self._syncing:
+            return
+        self._main._update_notification_settings(
+            enabled=self.notif_enabled_check.isChecked()
+        )
+        self._sync_from_settings()
+        self._main._refresh_notification_summary()
+
+    def _on_trigger_changed(self, _state: int) -> None:
+        if self._syncing:
+            return
+        self._main._update_notification_settings(
+            on_complete=self.notif_on_complete_check.isChecked(),
+            on_error=self.notif_on_error_check.isChecked(),
+            on_early_exit=self.notif_on_early_exit_check.isChecked(),
+        )
+        self._main._refresh_notification_summary()
+
+    def _prompt_feishu_webhook(self) -> str | None:
+        dialog = FeishuWebhookDialog(self._main._get_feishu_webhook_url(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.get_webhook_url()
+
+    def _on_feishu_toggled(self, _state: int) -> None:
+        if self._syncing:
+            return
+
+        if self.notif_feishu_check.isChecked():
+            webhook_url = self._prompt_feishu_webhook()
+            if not webhook_url:
+                self._syncing = True
+                self.notif_feishu_check.setChecked(False)
+                self._syncing = False
+                return
+            self._main._update_notification_settings(
+                feishu_enabled=True,
+                webhook_url=webhook_url,
+            )
+        else:
+            self._main._update_notification_settings(feishu_enabled=False)
+
+        self._sync_from_settings()
+        self._main._refresh_notification_summary()
+
+    def _edit_feishu_webhook(self) -> None:
+        webhook_url = self._prompt_feishu_webhook()
+        if not webhook_url:
+            return
+
+        self._main._update_notification_settings(
+            feishu_enabled=True,
+            webhook_url=webhook_url,
+        )
+
+        self._syncing = True
+        try:
+            self.notif_feishu_check.setChecked(True)
+        finally:
+            self._syncing = False
+
+        self._sync_from_settings()
+        self._main._refresh_notification_summary()
+
+
 class TemplateTermFetchWorker(QThread):
     """后台获取 Template Term 选项，避免阻塞主界面。"""
 
@@ -232,6 +388,8 @@ class TemplateTermFetchWorker(QThread):
 
 
 class SettingsDialog(QDialog):
+    _TRIPLE_CLICK_INTERVAL_MS = 500
+
     def __init__(
         self,
         snapshot: AppSettings,
@@ -239,8 +397,10 @@ class SettingsDialog(QDialog):
     ):
         super().__init__(parent)
         self._base = snapshot
+        self._dry_run_visible = snapshot.dry_run
+        self._click_count = 0
+        self._last_click_ms = 0.0
         self.setWindowTitle("系统设置")
-        self.setFixedSize(420, 280)
 
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
@@ -274,6 +434,57 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
+
+        self.dry_run_check.stateChanged.connect(self._on_dry_run_check_changed)
+        self._apply_dry_run_visibility()
+        self._install_triple_click_detector()
+
+    def _apply_dry_run_visibility(self) -> None:
+        if self._dry_run_visible:
+            self.dry_run_check.show()
+            self.setFixedSize(420, 280)
+        else:
+            self.dry_run_check.hide()
+            self.setFixedSize(420, 250)
+
+    def _on_dry_run_check_changed(self, _state: int) -> None:
+        if self.dry_run_check.isChecked():
+            self._dry_run_visible = True
+            self._apply_dry_run_visibility()
+            return
+        self._dry_run_visible = False
+        self._apply_dry_run_visibility()
+
+    def _install_triple_click_detector(self) -> None:
+        self.installEventFilter(self)
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget):
+            mouse_event = cast(QMouseEvent, event)
+            if (
+                mouse_event.button() == Qt.MouseButton.LeftButton
+                and (obj is self or self.isAncestorOf(obj))
+            ):
+                self._register_triple_click()
+        return super().eventFilter(obj, event)
+
+    def _register_triple_click(self) -> None:
+        now_ms = time.monotonic() * 1000
+        if now_ms - self._last_click_ms > self._TRIPLE_CLICK_INTERVAL_MS:
+            self._click_count = 0
+        self._click_count += 1
+        self._last_click_ms = now_ms
+        if self._click_count >= 3:
+            self._click_count = 0
+            self._reveal_dry_run()
+
+    def _reveal_dry_run(self) -> None:
+        if self._dry_run_visible:
+            return
+        self._dry_run_visible = True
+        self._apply_dry_run_visibility()
 
     def get_settings(self) -> AppSettings:
         try:
@@ -815,7 +1026,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Impact RPA - PyQt 桌面版")
         self.resize(1120, 760)
         # 限制最小宽度
-        self.setMinimumWidth(900)
+        self.setMinimumWidth(980)
         # 限制最小高度
         self.setMinimumHeight(720)
 
@@ -836,7 +1047,6 @@ class MainWindow(QMainWindow):
         self._connect_silent = False
         self._startup_connect_done = False
         self._lock_widgets: list = []
-        self._syncing_notification_ui = False
         self._syncing_template_term_ui = False
         self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self._fetch_progress_dialog: QDialog | None = None
@@ -941,7 +1151,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
+        main_layout.setSpacing(16)
 
         nav_layout = QHBoxLayout()
         title_label = QLabel("Impact RPA")
@@ -968,71 +1178,10 @@ class MainWindow(QMainWindow):
         sent_card = self.create_compact_stat_card("今日已发送", self.stat_sent_label, "Send")
         sent_card.setMaximumWidth(132)
         stats_layout.addWidget(sent_card, 0)
-
-        stats_layout.addWidget(self.create_active_template_card(), 1)
-        stats_layout.addWidget(self.create_template_term_card(), 2)
+        stats_layout.addWidget(self.create_active_template_card(), 3)
+        stats_layout.addWidget(self.create_template_term_card(), 3)
+        stats_layout.addWidget(self.create_notification_card(), 2)
         main_layout.addLayout(stats_layout)
-
-        notif_group = QGroupBox("通知配置")
-        notif_layout = QVBoxLayout(notif_group)
-        notif_layout.setSpacing(10)
-
-        self.notif_enabled_check = QCheckBox("启用通知")
-        notif_layout.addWidget(self.notif_enabled_check)
-
-        channel_group = QGroupBox("通知渠道")
-        channel_layout = QVBoxLayout(channel_group)
-        channel_layout.setSpacing(8)
-
-        notif_help_link = QLabel(
-            f'<a href="{FEISHU_WEBHOOK_HELP_URL}">'
-            "如何配置飞书自定义机器人 Webhook</a>"
-        )
-        notif_help_link.setOpenExternalLinks(True)
-        notif_help_link.setWordWrap(True)
-        channel_layout.addWidget(notif_help_link)
-
-        channel_row = QHBoxLayout()
-        channel_row.setSpacing(12)
-        self.notif_feishu_check = QCheckBox("飞书")
-        self.notif_feishu_edit_btn = QPushButton("编辑 Webhook")
-        self.notif_feishu_edit_btn.setEnabled(False)
-        self.notif_feishu_edit_btn.clicked.connect(self._edit_feishu_webhook)
-        channel_row.addWidget(self.notif_feishu_check)
-        channel_row.addWidget(self.notif_feishu_edit_btn)
-        channel_row.addStretch()
-        channel_layout.addLayout(channel_row)
-        self.notif_channel_group = channel_group
-        notif_layout.addWidget(channel_group)
-
-        trigger_group = QGroupBox("发送时机")
-        trigger_layout = QHBoxLayout(trigger_group)
-        trigger_layout.setSpacing(16)
-        self.notif_on_complete_check = QCheckBox("任务完成时")
-        self.notif_on_error_check = QCheckBox("任务失败时")
-        self.notif_on_early_exit_check = QCheckBox("任务提前结束时")
-        trigger_layout.addWidget(self.notif_on_complete_check)
-        trigger_layout.addWidget(self.notif_on_error_check)
-        trigger_layout.addWidget(self.notif_on_early_exit_check)
-        trigger_layout.addStretch()
-        self.notif_trigger_group = trigger_group
-        notif_layout.addWidget(trigger_group)
-
-        self.notif_enabled_check.stateChanged.connect(
-            self._on_notification_master_toggled
-        )
-        self.notif_on_complete_check.stateChanged.connect(
-            self._on_notification_trigger_changed
-        )
-        self.notif_on_error_check.stateChanged.connect(
-            self._on_notification_trigger_changed
-        )
-        self.notif_on_early_exit_check.stateChanged.connect(
-            self._on_notification_trigger_changed
-        )
-        self.notif_feishu_check.stateChanged.connect(self._on_feishu_toggled)
-
-        main_layout.addWidget(notif_group)
 
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -1247,6 +1396,68 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
         return card
 
+    def create_notification_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("statCard")
+        layout = QVBoxLayout(card)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        icon_label = QLabel("Msg")
+        icon_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        icon_label.setFixedWidth(48)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label = QLabel("通知")
+        title_label.setObjectName("statTitle")
+        header.addWidget(icon_label)
+        header.addWidget(title_label)
+        header.addStretch()
+
+        config_btn = QPushButton("配置")
+        config_btn.setToolTip("打开通知配置")
+        config_btn.clicked.connect(self._open_notification_settings)
+        header.addWidget(config_btn)
+        layout.addLayout(header)
+
+        self.notif_summary_label = QLabel("未启用通知")
+        self.notif_summary_label.setObjectName("notifSummary")
+        self.notif_summary_label.setWordWrap(True)
+        self.notif_summary_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.notif_summary_label.setToolTip("点击查看/编辑通知配置")
+        self.notif_summary_label.mousePressEvent = self._on_notification_summary_clicked  # type: ignore[method-assign]
+        layout.addWidget(self.notif_summary_label)
+        return card
+
+    @staticmethod
+    def _build_notification_summary(notif: NotificationSettings) -> str:
+        if not notif.enabled:
+            return "未启用通知"
+        feishu = get_feishu_channel(notif)
+        if feishu.enabled:
+            channel_text = "飞书已配置" if feishu.webhook_url.strip() else "飞书待配置 Webhook"
+        else:
+            channel_text = "未选择渠道"
+        triggers: list[str] = []
+        if notif.on_complete:
+            triggers.append("完成")
+        if notif.on_error:
+            triggers.append("失败")
+        if notif.on_early_exit:
+            triggers.append("提前结束")
+        trigger_text = " / ".join(triggers) if triggers else "无触发"
+        return f"已启用 · {channel_text} · {trigger_text}"
+
+    def _refresh_notification_summary(self) -> None:
+        summary = self._build_notification_summary(self._get_notification_settings())
+        self.notif_summary_label.setText(summary)
+
+    def _open_notification_settings(self) -> None:
+        NotificationSettingsDialog(self, self).exec()
+        self._refresh_notification_summary()
+
+    def _on_notification_summary_clicked(self, _event) -> None:
+        self._open_notification_settings()
+
     def _get_terms_file_path(self) -> Path:
         return Path(self.config.template_terms_file)
 
@@ -1435,7 +1646,7 @@ class MainWindow(QMainWindow):
             if not widget.text().strip() or widget.text().strip() == "10":
                 widget.setText(default_max)
         self._refresh_template_term_combo()
-        self._sync_notification_ui_from_settings()
+        self._refresh_notification_summary()
 
     def _get_notification_settings(self) -> NotificationSettings:
         return self.settings_service.get_snapshot().notifications
@@ -1476,87 +1687,6 @@ class MainWindow(QMainWindow):
 
         new_notif = notif.model_copy(update=updates)
         self.settings_service.save(settings.model_copy(update={"notifications": new_notif}))
-
-    def _sync_notification_ui_from_settings(self) -> None:
-        notif = self._get_notification_settings()
-        feishu = get_feishu_channel(notif)
-        master_enabled = notif.enabled
-
-        self._syncing_notification_ui = True
-        try:
-            self.notif_enabled_check.setChecked(master_enabled)
-            self.notif_on_complete_check.setChecked(notif.on_complete)
-            self.notif_on_error_check.setChecked(notif.on_error)
-            self.notif_on_early_exit_check.setChecked(notif.on_early_exit)
-            self.notif_feishu_check.setChecked(feishu.enabled)
-
-            self.notif_channel_group.setEnabled(master_enabled)
-            self.notif_trigger_group.setEnabled(master_enabled)
-            self.notif_feishu_edit_btn.setEnabled(
-                master_enabled and self.notif_feishu_check.isChecked()
-            )
-        finally:
-            self._syncing_notification_ui = False
-
-    def _on_notification_master_toggled(self, _state: int) -> None:
-        if self._syncing_notification_ui:
-            return
-        enabled = self.notif_enabled_check.isChecked()
-        self._update_notification_settings(enabled=enabled)
-        self._sync_notification_ui_from_settings()
-
-    def _on_notification_trigger_changed(self, _state: int) -> None:
-        if self._syncing_notification_ui:
-            return
-        self._update_notification_settings(
-            on_complete=self.notif_on_complete_check.isChecked(),
-            on_error=self.notif_on_error_check.isChecked(),
-            on_early_exit=self.notif_on_early_exit_check.isChecked(),
-        )
-
-    def _prompt_feishu_webhook(self) -> str | None:
-        dialog = FeishuWebhookDialog(self._get_feishu_webhook_url(), self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return dialog.get_webhook_url()
-
-    def _on_feishu_toggled(self, _state: int) -> None:
-        if self._syncing_notification_ui:
-            return
-
-        if self.notif_feishu_check.isChecked():
-            webhook_url = self._prompt_feishu_webhook()
-            if not webhook_url:
-                self._syncing_notification_ui = True
-                self.notif_feishu_check.setChecked(False)
-                self._syncing_notification_ui = False
-                return
-            self._update_notification_settings(
-                feishu_enabled=True,
-                webhook_url=webhook_url,
-            )
-        else:
-            self._update_notification_settings(feishu_enabled=False)
-
-        self._sync_notification_ui_from_settings()
-
-    def _edit_feishu_webhook(self) -> None:
-        webhook_url = self._prompt_feishu_webhook()
-        if not webhook_url:
-            return
-
-        self._update_notification_settings(
-            feishu_enabled=True,
-            webhook_url=webhook_url,
-        )
-
-        self._syncing_notification_ui = True
-        try:
-            self.notif_feishu_check.setChecked(True)
-        finally:
-            self._syncing_notification_ui = False
-
-        self._sync_notification_ui_from_settings()
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
@@ -2015,6 +2145,14 @@ class MainWindow(QMainWindow):
         QPushButton#tplSummaryBtn:hover {
             background-color: #f8fafc;
             border-color: #94a3b8;
+        }
+        QLabel#notifSummary {
+            color: #475569;
+            font-size: 12px;
+            padding: 4px 2px;
+        }
+        QLabel#notifSummary:hover {
+            color: #0f172a;
         }
         QGroupBox {
             background-color: white;
