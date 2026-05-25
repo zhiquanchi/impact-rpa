@@ -1,9 +1,11 @@
 import json
-import os
 import threading
+
 import requests
 from loguru import logger
+
 from core.config_manager import ConfigManager
+
 
 class RemoteSyncService:
     """
@@ -49,7 +51,7 @@ class RemoteSyncService:
         except Exception as e:
             logger.error(f"云端找回发生异常: {e}")
 
-    def on_config_changed(self, kind: str, data: dict):
+    def on_config_changed(self, kind: str, data: dict[str, object]) -> None:
         """
         观察者回调接口。
         kind: "settings" | "templates"
@@ -63,7 +65,7 @@ class RemoteSyncService:
             daemon=True
         ).start()
 
-    def _push_worker(self, kind: str, data: dict):
+    def _push_worker(self, kind: str, data: dict[str, object]) -> None:
         """实际执行推送的任务函数"""
         url = f"{self.api_base_url}/api/sync/{self.APP_ID}/{self.uid}"
         

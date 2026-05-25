@@ -1,15 +1,16 @@
-from loguru import logger
+import pyperclip
 import questionary
+from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-import pyperclip
 
 from core.config_manager import ConfigManager
 from core.template_manager import TemplateManager
-from infra.browser_manager import BrowserManager
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
+from infra.browser_manager import BrowserManager
+
 
 class MenuUI:
     """用户界面类，负责菜单显示和用户交互"""

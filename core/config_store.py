@@ -8,7 +8,6 @@ from loguru import logger
 
 from core.config_manager import ConfigManager
 
-
 ConfigKind = str  # "settings" | "templates"
 Subscriber = Callable[[ConfigKind, dict], None]
 

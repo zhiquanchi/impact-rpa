@@ -5,9 +5,9 @@ import time
 from datetime import datetime
 from typing import Protocol
 
-from loguru import logger
 from DrissionPage import Chromium
-from DrissionPage.errors import ElementNotFoundError, PageDisconnectedError, ContextLostError
+from DrissionPage.errors import ContextLostError, ElementNotFoundError, PageDisconnectedError
+from loguru import logger
 
 from exception_handler import exception_handler
 

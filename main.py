@@ -8,11 +8,11 @@ Refactor note:
 
 from app import ImpactRPA, main
 from core.config_manager import ConfigManager
-from core.template_manager import TemplateManager
 from core.settings_service import SettingsService
-from infra.browser_manager import BrowserManager
+from core.template_manager import TemplateManager
 from domain.date_picker import DatePicker, DatePickerResult
 from domain.proposal_sender import ProposalSender, SendProposalsResult
+from infra.browser_manager import BrowserManager
 from ui.menu_ui import MenuUI
 
 __all__ = [

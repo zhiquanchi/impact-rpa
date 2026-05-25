@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+
 from loguru import logger
 from rich.console import Console
 

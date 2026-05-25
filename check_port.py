@@ -1,11 +1,11 @@
-import socket
-import subprocess
-import platform
-import re
-import urllib.request
-import urllib.error
 import json
 import os
+import platform
+import re
+import socket
+import subprocess
+import urllib.error
+import urllib.request
 from typing import TypedDict
 
 from loguru import logger

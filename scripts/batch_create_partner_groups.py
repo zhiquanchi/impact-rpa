@@ -4,12 +4,11 @@
 
 重要：脚本只「附加」到你已启动的调试浏览器，结束时不会调用 browser.quit()，不会关闭浏览器。
 """
-from DrissionPage._units.listener import DataPacket
-
-import time
 import json
+import time
 from typing import Any
 
+from DrissionPage._units.listener import DataPacket
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -545,9 +544,9 @@ def main() -> int:
     """
     允许脚本独立运行：初始化 BrowserManager 并执行一次种子逻辑。
     """
-    from rich.console import Console
     # 使用 legacy_main 暴露出来的同一类型，避免静态类型检查认为两处 ConfigManager 不同
     from legacy_main import BrowserManager, ConfigManager
+    from rich.console import Console
 
     console = Console()
     config = ConfigManager()

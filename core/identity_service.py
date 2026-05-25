@@ -1,6 +1,7 @@
 import hashlib
 import uuid
 
+
 def get_machine_uid() -> str:
     """
     获取机器唯一标识并哈希化。

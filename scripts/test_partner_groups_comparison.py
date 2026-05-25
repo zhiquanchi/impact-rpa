@@ -19,29 +19,19 @@ _repo_root_s = str(REPO_ROOT)
 if _repo_root_s not in sys.path:
     sys.path.insert(0, _repo_root_s)
 
-import json
-from typing import Any
-
-from loguru import logger
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-# 复用 batch_create_partner_groups.py 中的解析模型和工具函数
-from scripts.batch_create_partner_groups import (
-    DiscoverTableStructureResponse,
-    DiscoverSearchWidget,
-    DiscoverFilterTypeItem,
-    PartnerGroupResponse,
-    dv_from_partner_group_record,
-    extract_filtertype_values_list_from_discovery_page,
-    get_partner_group_names_from_myMediaPartnerGroupsJSON,
-    _normalize_response_body,
-    _tags_need_to_create,
-)
 
 # 复用 legacy_main 中的 BrowserManager / ConfigManager
 from legacy_main import BrowserManager, ConfigManager
+from loguru import logger
+from rich.console import Console
+from rich.panel import Panel
+
+# 复用 batch_create_partner_groups.py 中的解析模型和工具函数
+from scripts.batch_create_partner_groups import (
+    _tags_need_to_create,
+    extract_filtertype_values_list_from_discovery_page,
+    get_partner_group_names_from_myMediaPartnerGroupsJSON,
+)
 
 DISCOVERY_URL = (
     "https://app.impact.com/secure/advertiser/discover/radius/fr/"

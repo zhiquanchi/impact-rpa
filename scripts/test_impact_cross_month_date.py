@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from main import BrowserManager, ConfigManager, DatePicker  # noqa: E402
 
-
 IMPACT_URL = (
     "https://app.impact.com/secure/advertiser/discover/radius/fr/partner_discover.ihtml"
     "?page=marketplace&slideout_id_type=partner#businessModels=CREATORS&partnerStatuses=1"

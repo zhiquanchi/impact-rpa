@@ -1,20 +1,20 @@
-from domain.proposal_modal_service import ProposalModalService
-from domain.selectors import MODAL_IFRAME_SELECTOR
-from domain.template_term_selector import TemplateTermSelector
-from domain.template_term_utils import get_template_term_options
-from domain.wait_utils import wait_until
-
 import os
 import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from loguru import logger
+
 import questionary
+from loguru import logger
 from rich.panel import Panel
 
-from exception_handler import exception_handler
 from domain.date_picker import DatePicker
+from domain.proposal_modal_service import ProposalModalService
+from domain.selectors import MODAL_IFRAME_SELECTOR
+from domain.template_term_selector import TemplateTermSelector
+from domain.template_term_utils import get_template_term_options
+from domain.wait_utils import wait_until
+from exception_handler import exception_handler
 
 
 @dataclass(frozen=True)
@@ -1246,8 +1246,8 @@ class ProposalSender:
         """加载所有已发送的 Creator 名称（从 logs 目录中的所有记录文件）"""
         sent_names: set[str] = set()
         try:
-            import json
             import glob
+            import json
 
             log_dir = os.path.join(os.path.dirname(__file__), "logs")
             if not os.path.exists(log_dir):

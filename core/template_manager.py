@@ -1,6 +1,8 @@
 import json
 import os
+
 from loguru import logger
+
 from core.config_manager import ConfigManager
 
 
@@ -34,8 +36,9 @@ class TemplateManager:
                 json.dump(data, f, indent=4, ensure_ascii=False)
             logger.info("模板数据保存成功")
             try:
-                if getattr(self.config, "store", None) is not None:
-                    self.config.store.force_reload_templates()
+                store = self.config.store
+                if store is not None:
+                    store.force_reload_templates()
             except Exception:
                 pass
             return True
