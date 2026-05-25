@@ -1,6 +1,11 @@
 import json
 import os
+from typing import TYPE_CHECKING
+
 from loguru import logger
+
+if TYPE_CHECKING:
+    from core.config_store import ConfigStore
 
 
 class ConfigManager:
@@ -17,7 +22,7 @@ class ConfigManager:
         self.templates_file = os.path.join(self.config_dir, "templates.json")
         self.settings_file = os.path.join(self.config_dir, "settings.json")
         # 可选：由组合根注入，用于配置热更新
-        self.store = None
+        self.store: ConfigStore | None = None
 
         self.default_settings = {
             "max_proposals": 10,
@@ -58,6 +63,19 @@ class ConfigManager:
                 "browser_ui_offset_x": 0,
                 "browser_ui_offset_y": 0,
             },
+            "notifications": {
+                "enabled": True,
+                "on_complete": True,
+                "on_error": True,
+                "on_early_exit": True,
+                "channels": [
+                    {
+                        "type": "feishu",
+                        "enabled": True,
+                        "webhook_url": "",
+                    }
+                ],
+            },
         }
 
         os.makedirs(self.config_dir, exist_ok=True)
@@ -77,7 +95,7 @@ class ConfigManager:
         )
         ConfigManager._file_logger_configured = True
 
-    def load_settings(self) -> dict:
+    def load_settings(self) -> dict[str, object]:
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, "r", encoding="utf-8") as f:
@@ -86,7 +104,7 @@ class ConfigManager:
             logger.error(f"加载设置失败: {e}")
         return self.default_settings.copy()
 
-    def save_settings(self, settings: dict) -> bool:
+    def save_settings(self, settings: dict[str, object]) -> bool:
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)

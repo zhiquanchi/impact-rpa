@@ -1,12 +1,12 @@
-from prompt_toolkit.validation import ValidationError
-from pydantic import BaseModel, Field, field_validator
 import html
 import json
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
 from core.config_manager import ConfigManager
 from core.daily_sent_counter import DailySentCounter
 from core.settings_service import SettingsService
@@ -902,7 +903,7 @@ class MainWindow(QMainWindow):
         self.output_bridge.uninstall_loguru_sink()
         super().closeEvent(event)
 
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # ty:ignore[invalid-method-override]
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # type: ignore[override]
         """拦截被锁定控件的点击事件"""
         if obj in self._lock_widgets and event.type() == QEvent.Type.MouseButtonPress:
             widget = cast(QWidget, obj)
@@ -1219,8 +1220,10 @@ class MainWindow(QMainWindow):
         for widget in (self.list_max_count_input, self.search_max_count_input):
             if not widget.text().strip() or widget.text().strip() == "10":
                 widget.setText(default_max)
-        self.stat_term_label.setText(settings.get("template_term", "-"))
-        self.stat_term_label.setToolTip(settings.get("template_term", "-"))
+        template_term = settings.get("template_term", "-")
+        term_text = template_term if isinstance(template_term, str) else str(template_term)
+        self.stat_term_label.setText(term_text)
+        self.stat_term_label.setToolTip(term_text)
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
@@ -1392,7 +1395,8 @@ class MainWindow(QMainWindow):
 
         # 获取当前 Template Term 设置
         settings = self.settings_service.get_snapshot()
-        current_term = settings.get("template_term", "")
+        template_term = settings.get("template_term", "")
+        current_term = template_term if isinstance(template_term, str) else str(template_term)
 
         # 获取 Template Term 选项（需要浏览器连接）
         term_options: list[str] = []
@@ -1425,7 +1429,8 @@ class MainWindow(QMainWindow):
     def _ensure_template_term(self) -> bool:
         """确保 Template Term 已配置，未配置时弹出强制选择对话框"""
         settings = self.settings_service.get_snapshot()
-        current_term = settings.get("template_term", "")
+        template_term = settings.get("template_term", "")
+        current_term = template_term if isinstance(template_term, str) else str(template_term)
         if current_term:
             return True
 
@@ -1527,8 +1532,13 @@ class MainWindow(QMainWindow):
             "highlight",
         )
 
+        browser = self.browser
+        if browser is None:
+            QMessageBox.warning(self, "浏览器未连接", "请先连接浏览器后再开始任务")
+            return
+
         self.worker = TaskWorker(
-            self.browser,
+            browser,
             self.config,
             self.output_bridge,
             mode,
@@ -1573,6 +1583,20 @@ class MainWindow(QMainWindow):
 
         if clicked_count > 0:
             self.daily_sent_counter.add(clicked_count)
+
+        try:
+            from notification_service import NotificationService
+
+            mode = self.worker.mode if self.worker else None
+            NotificationService().notify_proposal_run(
+                settings=self.settings_service.get_snapshot(),
+                clicked_count=clicked_count,
+                completed_all=completed_all,
+                error_message=error_message or None,
+                mode=mode,
+            )
+        except Exception:
+            pass
 
         self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()

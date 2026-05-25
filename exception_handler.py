@@ -3,18 +3,19 @@
 用于记录异常情况到文件，并为后续的飞书通知做准备
 """
 
-import os
 import json
+import os
 import traceback
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any
+
 from loguru import logger
 
 
 class ExceptionHandler:
     """异常处理器，负责记录异常日志并发送通知"""
-    
-    def __init__(self, base_dir: str = None):
+
+    def __init__(self, base_dir: str | None = None):
         self.base_dir = base_dir or os.path.dirname(__file__)
         self.log_dir = os.path.join(self.base_dir, 'logs')
         self.exception_log_file = os.path.join(self.log_dir, 'exceptions_{time:YYYY-MM-DD}.log')
@@ -23,10 +24,10 @@ class ExceptionHandler:
         os.makedirs(self.log_dir, exist_ok=True)
     
     def log_exception(
-        self, 
-        exception: Exception, 
-        context: Optional[Dict[str, Any]] = None,
-        send_notification: bool = False
+        self,
+        exception: Exception,
+        context: dict[str, Any] | None = None,
+        send_notification: bool = False,
     ) -> str:
         """
         记录异常到日志文件
@@ -58,13 +59,13 @@ class ExceptionHandler:
         # 记录到loguru，使用logger.exception获取详细堆栈
         logger.exception(f"异常发生: {exception_info['exception_type']} - {exception_info['exception_message']}")
         
-        # 预留飞书通知接口
+        # 发送任务异常通知
         if send_notification:
-            self._send_feishu_notification(exception_info)
+            self._send_exception_notification(exception_info)
         
         return exception_id
     
-    def _write_to_log(self, exception_info: Dict[str, Any]):
+    def _write_to_log(self, exception_info: dict[str, Any]) -> None:
         """写入异常到日志文件"""
         log_file = os.path.join(
             self.log_dir, 
@@ -78,18 +79,28 @@ class ExceptionHandler:
         except Exception as e:
             logger.error(f"写入异常日志失败: {e}")
     
-    def _send_feishu_notification(self, exception_info: Dict[str, Any]):
+    def _send_exception_notification(self, exception_info: dict[str, Any]) -> None:
         try:
-            from notification_service import NotificationService, NotificationPayload
-            service = NotificationService()
-            title = "Impact-RPA 异常"
-            message = f"{exception_info.get('exception_type')}: {exception_info.get('exception_message')}"
-            payload = NotificationPayload(title=title, message=message)
-            service.send(payload)
+            from core.config_manager import ConfigManager
+            from core.settings_service import SettingsService
+            from notification_service import NotificationService
+
+            config = ConfigManager()
+            settings = SettingsService(config).get_snapshot()
+            message = (
+                f"{exception_info.get('exception_type')}: "
+                f"{exception_info.get('exception_message')}"
+            )
+            NotificationService().notify_proposal_run(
+                settings=settings,
+                clicked_count=0,
+                completed_all=False,
+                error_message=message,
+            )
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
     
-    def get_recent_exceptions(self, count: int = 10) -> list:
+    def get_recent_exceptions(self, count: int = 10) -> list[dict[str, Any]]:
         """
         获取最近的异常记录
         

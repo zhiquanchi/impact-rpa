@@ -5,12 +5,13 @@ from core.config_manager import ConfigManager
 from core.config_store import ConfigStore
 from core.identity_service import get_machine_uid
 from core.remote_sync_service import RemoteSyncService
-from core.settings_service import SettingsService
+from core.settings_service import SettingsService, get_int_setting
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender, SendProposalsResult
 from infra.browser_manager import BrowserManager
 from ui.menu_ui import MenuUI
 from ui.output_bridge import OutputBridge
+
 
 class ImpactRPA:
     """Impact RPA 主应用类（组合根）。"""
@@ -22,7 +23,8 @@ class ImpactRPA:
         # 初始化远程同步服务
         self.uid = get_machine_uid()
         initial_settings = self.config.load_settings()
-        sync_url = initial_settings.get("sync_url", "")
+        sync_url_raw = initial_settings.get("sync_url", "")
+        sync_url = sync_url_raw if isinstance(sync_url_raw, str) else str(sync_url_raw)
         self.sync_service = RemoteSyncService(sync_url, self.uid) if sync_url else None
 
         # 启动时拉取配置（在 ConfigStore 启动监听之前）
@@ -61,7 +63,7 @@ class ImpactRPA:
             if not self.browser.init():
                 self.console.print("[red]无法连接浏览器，请确保浏览器已打开[/red]")
                 try:
-                    from notification_service import NotificationService, NotificationPayload
+                    from notification_service import NotificationPayload, NotificationService
                     NotificationService().send(NotificationPayload(message="无法连接浏览器"))
                 except Exception:
                     pass
@@ -128,16 +130,33 @@ class ImpactRPA:
                 self.console.print("\n[bold cyan]感谢使用，再见！👋[/bold cyan]")
                 break
 
-    def _notify_proposal_run(self, result: SendProposalsResult | None = None, error: Exception | None = None) -> None:
-        if error is not None:
-            msg = f"发送失败: {error}"
-        elif result is not None and result.completed_all:
-            msg = f"发送完成，共发送 {result.clicked_count} 个"
-        else:
-            return
+    def _notify_proposal_run(
+        self,
+        result: SendProposalsResult | None = None,
+        error: Exception | None = None,
+        *,
+        mode: str | None = None,
+    ) -> None:
         try:
-            from notification_service import NotificationService, NotificationPayload
-            NotificationService().send(NotificationPayload(message=msg))
+            from notification_service import NotificationService
+
+            settings = self.settings.get_snapshot()
+            if error is not None:
+                NotificationService().notify_proposal_run(
+                    settings=settings,
+                    clicked_count=0,
+                    completed_all=False,
+                    error_message=str(error),
+                    mode=mode,
+                )
+            elif result is not None:
+                NotificationService().notify_proposal_run(
+                    settings=settings,
+                    clicked_count=result.clicked_count,
+                    completed_all=result.completed_all,
+                    error_message=None,
+                    mode=mode,
+                )
         except Exception:
             pass
 
@@ -147,7 +166,7 @@ class ImpactRPA:
             return
 
         settings = self.settings.get_snapshot()
-        max_count = settings["max_proposals"]
+        max_count = get_int_setting(settings, "max_proposals", 10)
         start_input = questionary.text("请输入起始序号 N (从 1 开始，默认 1):", default="1").ask()
         if start_input is None:
             self.console.print("[yellow]已取消[/yellow]")
@@ -183,9 +202,9 @@ class ImpactRPA:
 
         try:
             result = self.proposal_sender.send_proposals(max_count, template, start_index=start_index)
-            self._notify_proposal_run(result=result, error=None)
+            self._notify_proposal_run(result=result, error=None, mode="list")
         except Exception as e:
-            self._notify_proposal_run(result=None, error=e)
+            self._notify_proposal_run(result=None, error=e, mode="list")
 
     def _send_proposal_by_table_row(self):
         if not self.browser.is_connected() and not self.browser.init():
@@ -204,7 +223,7 @@ class ImpactRPA:
         questionary.press_any_key_to_continue("操作完成后，按任意键继续...").ask()
 
         settings = self.settings.get_snapshot()
-        default_count = settings.get("max_proposals", 10)
+        default_count = get_int_setting(settings, "max_proposals", 10)
         count_input = questionary.text(f"请输入要发送的数量 (默认 {default_count}):", default=str(default_count)).ask()
         if count_input is None:
             self.console.print("[yellow]已取消[/yellow]")
@@ -249,9 +268,9 @@ class ImpactRPA:
             result = self.proposal_sender.send_proposals_creator_search(
                 max_count=max_count, start_row=start_row, template_content=template
             )
-            self._notify_proposal_run(result=result, error=None)
+            self._notify_proposal_run(result=result, error=None, mode="creator_search")
         except Exception as e:
-            self._notify_proposal_run(result=None, error=e)
+            self._notify_proposal_run(result=None, error=e, mode="creator_search")
 
 
 def main() -> None:
