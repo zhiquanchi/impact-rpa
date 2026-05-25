@@ -34,12 +34,16 @@ from PyQt6.QtWidgets import (
 
 from core.config_manager import ConfigManager
 from core.daily_sent_counter import DailySentCounter
-from core.settings_service import SettingsService
+from core.settings_service import SettingsService, deep_merge
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
 from infra.browser_manager import BrowserManager
 from ui.output_bridge import OutputBridge
+
+FEISHU_WEBHOOK_HELP_URL = (
+    "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot"
+)
 
 
 def has_browser_process() -> bool:
@@ -155,6 +159,83 @@ def validate_positive_float(
         return model.model_validate({"value": value}).value
     except ValidationError as exc:
         raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
+
+
+def get_notification_settings(
+    settings: dict[str, object], defaults: dict[str, object]
+) -> dict[str, object]:
+    notif_raw = settings.get("notifications")
+    notif = notif_raw if isinstance(notif_raw, dict) else {}
+    default_notif_raw = defaults.get("notifications")
+    default_notif = default_notif_raw if isinstance(default_notif_raw, dict) else {}
+    return deep_merge(default_notif, notif)
+
+
+def get_feishu_channel(notif_cfg: dict[str, object]) -> dict[str, object]:
+    channels_raw = notif_cfg.get("channels", [])
+    channels = channels_raw if isinstance(channels_raw, list) else []
+    for item in channels:
+        if isinstance(item, dict) and item.get("type") == "feishu":
+            return item
+    return {"type": "feishu", "enabled": False, "webhook_url": ""}
+
+
+class FeishuWebhookDialog(QDialog):
+    """飞书 Webhook 配置弹窗。"""
+
+    def __init__(self, webhook_url: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("配置飞书 Webhook")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        help_link = QLabel(
+            f'<a href="{FEISHU_WEBHOOK_HELP_URL}">'
+            "查看飞书自定义机器人配置说明（获取 Webhook 地址）</a>"
+        )
+        help_link.setOpenExternalLinks(True)
+        help_link.setWordWrap(True)
+        layout.addWidget(help_link)
+
+        layout.addWidget(
+            QLabel(
+                "在飞书群中添加「自定义机器人」后，将 Webhook 地址粘贴到下方："
+            )
+        )
+
+        self.url_input = QLineEdit(webhook_url)
+        self.url_input.setPlaceholderText(
+            "https://open.feishu.cn/open-apis/bot/v2/hook/..."
+        )
+        layout.addWidget(self.url_input)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primaryBtn")
+        save_btn.clicked.connect(self._on_save)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(save_btn)
+        layout.addLayout(btn_layout)
+
+    def _on_save(self) -> None:
+        url = self.get_webhook_url()
+        if not url:
+            QMessageBox.warning(self, "输入无效", "请输入 Webhook URL。")
+            return
+        if not url.startswith(("http://", "https://")):
+            QMessageBox.warning(
+                self, "输入无效", "Webhook URL 需以 http:// 或 https:// 开头。"
+            )
+            return
+        self.accept()
+
+    def get_webhook_url(self) -> str:
+        return self.url_input.text().strip()
 
 
 class TemplateTermFetchWorker(QThread):
@@ -884,6 +965,7 @@ class MainWindow(QMainWindow):
         self._cached_browser_connected = False
         self._lock_widgets: list = []
         self._highlight_animation: QTimer | None = None
+        self._syncing_notification_ui = False
 
         self.bridge_log.connect(self.log_message)
         self.output_bridge = OutputBridge.for_callback(
@@ -1072,6 +1154,67 @@ class MainWindow(QMainWindow):
         )
         main_layout.addLayout(stats_layout)
 
+        notif_group = QGroupBox("通知配置")
+        notif_layout = QVBoxLayout(notif_group)
+        notif_layout.setSpacing(10)
+
+        self.notif_enabled_check = QCheckBox("启用通知")
+        notif_layout.addWidget(self.notif_enabled_check)
+
+        channel_group = QGroupBox("通知渠道")
+        channel_layout = QVBoxLayout(channel_group)
+        channel_layout.setSpacing(8)
+
+        notif_help_link = QLabel(
+            f'<a href="{FEISHU_WEBHOOK_HELP_URL}">'
+            "如何配置飞书自定义机器人 Webhook</a>"
+        )
+        notif_help_link.setOpenExternalLinks(True)
+        notif_help_link.setWordWrap(True)
+        channel_layout.addWidget(notif_help_link)
+
+        channel_row = QHBoxLayout()
+        channel_row.setSpacing(12)
+        self.notif_feishu_check = QCheckBox("飞书")
+        self.notif_feishu_edit_btn = QPushButton("编辑 Webhook")
+        self.notif_feishu_edit_btn.setEnabled(False)
+        self.notif_feishu_edit_btn.clicked.connect(self._edit_feishu_webhook)
+        channel_row.addWidget(self.notif_feishu_check)
+        channel_row.addWidget(self.notif_feishu_edit_btn)
+        channel_row.addStretch()
+        channel_layout.addLayout(channel_row)
+        self.notif_channel_group = channel_group
+        notif_layout.addWidget(channel_group)
+
+        trigger_group = QGroupBox("发送时机")
+        trigger_layout = QHBoxLayout(trigger_group)
+        trigger_layout.setSpacing(16)
+        self.notif_on_complete_check = QCheckBox("任务完成时")
+        self.notif_on_error_check = QCheckBox("任务失败时")
+        self.notif_on_early_exit_check = QCheckBox("任务提前结束时")
+        trigger_layout.addWidget(self.notif_on_complete_check)
+        trigger_layout.addWidget(self.notif_on_error_check)
+        trigger_layout.addWidget(self.notif_on_early_exit_check)
+        trigger_layout.addStretch()
+        self.notif_trigger_group = trigger_group
+        notif_layout.addWidget(trigger_group)
+
+        self.notif_enabled_check.stateChanged.connect(
+            self._on_notification_master_toggled
+        )
+        self.notif_on_complete_check.stateChanged.connect(
+            self._on_notification_trigger_changed
+        )
+        self.notif_on_error_check.stateChanged.connect(
+            self._on_notification_trigger_changed
+        )
+        self.notif_on_early_exit_check.stateChanged.connect(
+            self._on_notification_trigger_changed
+        )
+        self.notif_feishu_check.stateChanged.connect(self._on_feishu_toggled)
+
+        main_layout.addWidget(notif_group)
+
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         left_panel = QWidget()
@@ -1224,6 +1367,129 @@ class MainWindow(QMainWindow):
         term_text = template_term if isinstance(template_term, str) else str(template_term)
         self.stat_term_label.setText(term_text)
         self.stat_term_label.setToolTip(term_text)
+        self._sync_notification_ui_from_settings()
+
+    def _get_notification_settings(self) -> dict[str, object]:
+        settings = self.settings_service.get_snapshot()
+        return get_notification_settings(settings, self.config.default_settings)
+
+    def _get_feishu_webhook_url(self) -> str:
+        feishu = get_feishu_channel(self._get_notification_settings())
+        webhook_url = feishu.get("webhook_url", "")
+        return webhook_url if isinstance(webhook_url, str) else str(webhook_url)
+
+    def _update_notification_settings(self, **kwargs: object) -> None:
+        settings = self.settings_service.get_snapshot()
+        notif = self._get_notification_settings()
+
+        for key in ("enabled", "on_complete", "on_error", "on_early_exit"):
+            if key in kwargs:
+                notif[key] = kwargs[key]
+
+        if "feishu_enabled" in kwargs or "webhook_url" in kwargs:
+            channels_raw = notif.get("channels", [])
+            channels = channels_raw if isinstance(channels_raw, list) else []
+            feishu = get_feishu_channel(notif)
+            if "feishu_enabled" in kwargs:
+                feishu["enabled"] = bool(kwargs["feishu_enabled"])
+            if "webhook_url" in kwargs:
+                webhook_url = kwargs["webhook_url"]
+                feishu["webhook_url"] = (
+                    webhook_url if isinstance(webhook_url, str) else str(webhook_url)
+                )
+            new_channels = [
+                item
+                for item in channels
+                if not (isinstance(item, dict) and item.get("type") == "feishu")
+            ]
+            new_channels.append(feishu)
+            notif["channels"] = new_channels
+
+        settings["notifications"] = notif
+        self.settings_service.save(settings)
+
+    def _sync_notification_ui_from_settings(self) -> None:
+        notif = self._get_notification_settings()
+        feishu = get_feishu_channel(notif)
+        master_enabled = bool(notif.get("enabled", True))
+
+        self._syncing_notification_ui = True
+        try:
+            self.notif_enabled_check.setChecked(master_enabled)
+            self.notif_on_complete_check.setChecked(bool(notif.get("on_complete", True)))
+            self.notif_on_error_check.setChecked(bool(notif.get("on_error", True)))
+            self.notif_on_early_exit_check.setChecked(
+                bool(notif.get("on_early_exit", True))
+            )
+            self.notif_feishu_check.setChecked(bool(feishu.get("enabled", False)))
+
+            self.notif_channel_group.setEnabled(master_enabled)
+            self.notif_trigger_group.setEnabled(master_enabled)
+            self.notif_feishu_edit_btn.setEnabled(
+                master_enabled and self.notif_feishu_check.isChecked()
+            )
+        finally:
+            self._syncing_notification_ui = False
+
+    def _on_notification_master_toggled(self, _state: int) -> None:
+        if self._syncing_notification_ui:
+            return
+        enabled = self.notif_enabled_check.isChecked()
+        self._update_notification_settings(enabled=enabled)
+        self._sync_notification_ui_from_settings()
+
+    def _on_notification_trigger_changed(self, _state: int) -> None:
+        if self._syncing_notification_ui:
+            return
+        self._update_notification_settings(
+            on_complete=self.notif_on_complete_check.isChecked(),
+            on_error=self.notif_on_error_check.isChecked(),
+            on_early_exit=self.notif_on_early_exit_check.isChecked(),
+        )
+
+    def _prompt_feishu_webhook(self) -> str | None:
+        dialog = FeishuWebhookDialog(self._get_feishu_webhook_url(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.get_webhook_url()
+
+    def _on_feishu_toggled(self, _state: int) -> None:
+        if self._syncing_notification_ui:
+            return
+
+        if self.notif_feishu_check.isChecked():
+            webhook_url = self._prompt_feishu_webhook()
+            if not webhook_url:
+                self._syncing_notification_ui = True
+                self.notif_feishu_check.setChecked(False)
+                self._syncing_notification_ui = False
+                return
+            self._update_notification_settings(
+                feishu_enabled=True,
+                webhook_url=webhook_url,
+            )
+        else:
+            self._update_notification_settings(feishu_enabled=False)
+
+        self._sync_notification_ui_from_settings()
+
+    def _edit_feishu_webhook(self) -> None:
+        webhook_url = self._prompt_feishu_webhook()
+        if not webhook_url:
+            return
+
+        self._update_notification_settings(
+            feishu_enabled=True,
+            webhook_url=webhook_url,
+        )
+
+        self._syncing_notification_ui = True
+        try:
+            self.notif_feishu_check.setChecked(True)
+        finally:
+            self._syncing_notification_ui = False
+
+        self._sync_notification_ui_from_settings()
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
