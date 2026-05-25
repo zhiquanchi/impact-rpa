@@ -4,6 +4,7 @@ Template Term 相关工具函数
 提供获取和选择 Template Term 下拉选项的功能，供确认弹窗和执行流程使用。
 """
 
+import json
 import re
 import time
 
@@ -15,8 +16,351 @@ TEMPLATE_TERM_SOURCE_URL = (
     "view-manage-ios-flow.ihtml?execution=e23s1#fqe__ios=ACTIVE"
 )
 
-# 这个是点击展开和收齐 Template Term 下拉框的元素
-TEMPLATE_TERM = """//input[@name='insertionOrderId']/preceding-sibling::div//button[@data-testid='uicl-multi-select-input-button']"""
+# 旧版 XPath 兜底（DOM 结构变化时仍可能命中）
+TEMPLATE_TERM_XPATH = (
+    "//input[@name='insertionOrderId']/preceding-sibling::div"
+    "//button[@data-testid='uicl-multi-select-input-button']"
+)
+
+_PLACEHOLDER_NORMS = {
+    "",
+    "select",
+    "select template term",
+    "choose",
+    "please select",
+    "-- select --",
+}
+
+
+def _normalize_term_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
+def _is_date_like_trigger(ele) -> bool:
+    """判断元素是否属于日期/时间相关触发器，避免误点 Contract Dates 区域。"""
+    if not ele:
+        return True
+
+    try:
+        data_testid = (ele.attr("data-testid") or "").strip().lower()
+        if data_testid == "uicl-date-input":
+            return True
+    except Exception:
+        pass
+
+    try:
+        aria_label = (ele.attr("aria-label") or "").strip().lower()
+        if "date" in aria_label or "calendar" in aria_label:
+            return True
+    except Exception:
+        pass
+
+    try:
+        text = re.sub(r"\s+", " ", (ele.text or "").strip())
+        if re.match(
+            r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$",
+            text,
+        ):
+            return True
+    except Exception:
+        pass
+
+    try:
+        cur = ele.parent()
+        for _ in range(6):
+            if not cur:
+                break
+            cls = cur.attr("class") or ""
+            if "standard-date-time-input" in cls:
+                return True
+            if "iui-form-section" in cls:
+                break
+            cur = cur.parent()
+    except Exception:
+        pass
+
+    return False
+
+
+def _find_template_term_trigger(iframe):
+    """在 Template Term 字段容器内寻找下拉触发器，避免误点其他 multi-select。"""
+    # 策略1：hidden input[name=insertionOrderId] → uicl-multiselect-input → button
+    try:
+        hidden = iframe.ele('css:input[name="insertionOrderId"]', timeout=2)
+        if hidden:
+            cur = hidden.parent()
+            for _ in range(5):
+                if not cur:
+                    break
+                if (cur.attr("data-testid") or "") == "uicl-multiselect-input":
+                    trigger = cur.ele(
+                        'css:button[data-testid="uicl-multi-select-input-button"]',
+                        timeout=0.3,
+                    )
+                    if trigger and not _is_date_like_trigger(trigger):
+                        logger.debug(
+                            "Template Term 触发器：通过 input[name=insertionOrderId] 定位"
+                        )
+                        return trigger
+                    break
+                cur = cur.parent()
+    except Exception as e:
+        logger.debug(f"策略1定位 Template Term 触发器失败: {e}")
+
+    # 策略2：Template Term 标签 → iui-form-section → select-input 字段对
+    try:
+        term_label = iframe.ele("text:Template Term", timeout=2)
+        if term_label:
+            cur = term_label.parent()
+            for _ in range(5):
+                if not cur:
+                    break
+                cls = cur.attr("class") or ""
+                if "iui-form-section" in cls:
+                    try:
+                        field = cur.ele(
+                            'css:div[data-testid="uicl-field-label-pair"][class*="select-input"]',
+                            timeout=0.3,
+                        )
+                    except Exception:
+                        field = None
+                    if field:
+                        trigger = field.ele(
+                            'css:button[data-testid="uicl-multi-select-input-button"]',
+                            timeout=0.3,
+                        )
+                        if trigger and not _is_date_like_trigger(trigger):
+                            logger.debug(
+                                "Template Term 触发器：通过 iui-form-section > select-input 定位"
+                            )
+                            return trigger
+                    break
+                cur = cur.parent()
+    except Exception as e:
+        logger.debug(f"策略2定位 Template Term 触发器失败: {e}")
+
+    # 策略3：旧 XPath 兜底
+    try:
+        trigger = iframe.ele(f"xpath:{TEMPLATE_TERM_XPATH}", timeout=1)
+        if trigger and not _is_date_like_trigger(trigger):
+            logger.debug("Template Term 触发器：通过 legacy XPath 定位")
+            return trigger
+    except Exception as e:
+        logger.debug(f"策略3定位 Template Term 触发器失败: {e}")
+
+    logger.debug("未能在 Template Term 字段附近找到安全的下拉触发器")
+    return None
+
+
+def _find_template_term_native_select(iframe):
+    """查找与 Template Term 字段关联的原生 select（避免误用页面其他 uicl-select）。"""
+    try:
+        hidden = iframe.ele('css:input[name="insertionOrderId"]', timeout=1)
+        if hidden:
+            cur = hidden.parent()
+            for _ in range(6):
+                if not cur:
+                    break
+                try:
+                    sel = cur.ele('css:select[data-testid="uicl-select"]', timeout=0.2)
+                except Exception:
+                    sel = None
+                if sel:
+                    return sel
+                cur = cur.parent()
+    except Exception:
+        pass
+    return None
+
+
+def _read_native_select_value(select_ele) -> str:
+    try:
+        value = select_ele.run_js(
+            """
+            const opt = this.options[this.selectedIndex];
+            return opt ? (opt.text || opt.label || opt.value || '') : (this.value || '');
+            """
+        )
+        if value:
+            return str(value).strip()
+    except Exception:
+        pass
+    try:
+        selected = select_ele.ele("css:option:checked", timeout=0.2)
+        if selected:
+            return (selected.text or selected.attr("value") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def try_native_template_term_select(iframe, desired: str) -> bool:
+    """尝试通过 Template Term 关联的原生 select 选择，并校验选中结果。"""
+    select_ele = _find_template_term_native_select(iframe)
+    if not select_ele:
+        return False
+
+    desired_norm = _normalize_term_text(desired)
+    try:
+        select_ele.select(desired)
+        time.sleep(0.2)
+        selected_norm = _normalize_term_text(_read_native_select_value(select_ele))
+        if not selected_norm:
+            logger.debug("原生 select 选择后未读到有效选中值，回退到 multi-select")
+            return False
+        if selected_norm == desired_norm or desired_norm in selected_norm:
+            logger.info(f"已通过原生 select 选择 Template Term: {desired}")
+            return True
+        logger.debug(
+            f"原生 select 选中值不匹配: expected='{desired_norm}', actual='{selected_norm}'"
+        )
+    except Exception as e:
+        logger.warning(f"原生 select 选择 Template Term 失败，尝试 multi-select: {e}")
+    return False
+
+
+def _click_element(ele) -> bool:
+    if not ele:
+        return False
+    try:
+        ele.run_js('this.scrollIntoView({block:"center", inline:"nearest"});')
+    except Exception:
+        pass
+    try:
+        ele.click(by_js=True)
+        return True
+    except Exception:
+        pass
+    try:
+        ele.click()
+        return True
+    except Exception as e:
+        logger.debug(f"点击元素失败: {e}")
+    return False
+
+
+def _is_element_visible(ele) -> bool:
+    if not ele:
+        return False
+    try:
+        data = json.loads(
+            ele.run_js(
+                """
+                const r = this.getBoundingClientRect();
+                const s = window.getComputedStyle(this);
+                return JSON.stringify({
+                    w: r.width,
+                    h: r.height,
+                    display: s.display,
+                    visibility: s.visibility,
+                    opacity: s.opacity
+                });
+                """
+            )
+        )
+        return (
+            float(data.get("w", 0)) > 20
+            and float(data.get("h", 0)) > 20
+            and data.get("display") != "none"
+            and data.get("visibility") != "hidden"
+            and float(data.get("opacity", 1)) > 0
+        )
+    except Exception:
+        return False
+
+
+def _dropdown_has_options(dropdown) -> bool:
+    if not dropdown:
+        return False
+    try:
+        opts = dropdown.eles('xpath:.//li[@role="option"]', timeout=0.3)
+        if opts:
+            return True
+        opts = dropdown.eles("css:div.text-ellipsis", timeout=0.3)
+        return bool(opts)
+    except Exception:
+        return False
+
+
+def _trigger_is_expanded(trigger) -> bool:
+    if not trigger:
+        return False
+    try:
+        if (trigger.attr("aria-expanded") or "").strip().lower() == "true":
+            return True
+    except Exception:
+        pass
+    try:
+        cur = trigger.parent()
+        for _ in range(4):
+            if not cur:
+                break
+            if (cur.attr("aria-expanded") or "").strip().lower() == "true":
+                return True
+            cur = cur.parent()
+    except Exception:
+        pass
+    return False
+
+
+def _find_visible_template_term_dropdown(tab, iframe):
+    """查找可见的 Template Term 下拉层（优先 portal 主文档，再 iframe）。"""
+    selectors = [
+        'css:div[data-testid="uicl-multi-select-dropdown"]',
+        'css:div[data-testid="uicl-dropdown"]',
+    ]
+    for root in (tab, iframe):
+        if not root:
+            continue
+        for selector in selectors:
+            try:
+                nodes = root.eles(selector, timeout=0.5)
+            except Exception:
+                nodes = []
+            for node in nodes or []:
+                if _is_element_visible(node) and _dropdown_has_options(node):
+                    return node
+    return None
+
+
+def _close_template_term_dropdown(iframe, tab=None) -> None:
+    trigger = _find_template_term_trigger(iframe)
+    if not trigger:
+        return
+    if _trigger_is_expanded(trigger) or _find_visible_template_term_dropdown(tab, iframe):
+        if _click_element(trigger):
+            logger.debug("已收起 Template Term 下拉框")
+            time.sleep(0.2)
+
+
+def _parse_options_from_dropdown(dropdown) -> list[str]:
+    options_list: list[str] = []
+
+    items = dropdown.eles('xpath:.//li[@role="option"]')
+    for it in items or []:
+        txt = (it.text or "").strip()
+        if txt:
+            options_list.append(txt)
+
+    if not options_list:
+        nodes = dropdown.eles("css:div.text-ellipsis")
+        for it in nodes or []:
+            txt = (it.text or "").strip()
+            if txt:
+                options_list.append(txt)
+
+    return _dedupe_options(options_list)
+
+
+def _dedupe_options(options_list: list[str]) -> list[str]:
+    seen = set()
+    unique_options = []
+    for opt in options_list:
+        norm = _normalize_term_text(opt)
+        if norm not in seen and norm not in _PLACEHOLDER_NORMS:
+            seen.add(norm)
+            unique_options.append(opt)
+    return unique_options
 
 
 def get_template_term_options(iframe, tab=None) -> list[str]:
@@ -30,39 +374,20 @@ def get_template_term_options(iframe, tab=None) -> list[str]:
     Returns:
         list[str]: 选项文本列表，如果失败则返回空列表
     """
-    options_list = []
+    options_list: list[str] = []
     try:
         dropdown = _open_template_term_dropdown(iframe, tab=tab)
         if not dropdown:
             logger.debug("未能安全打开 Template Term 下拉框，返回空选项列表")
             return []
 
-        # 先尝试获取 li[@role="option"] 元素
-        items = dropdown.eles('xpath:.//li[@role="option"]')
-        logger.debug(f"li[@role=option] 查找结果: {len(items) if items else 0} 个")
-        for it in items or []:
-            txt = it.text or ""
-            if txt.strip():
-                options_list.append(txt.strip())
+        options_list = _parse_options_from_dropdown(dropdown)
 
-        # 如果没有找到，尝试获取 div.text-ellipsis 元素
         if not options_list:
-            nodes = dropdown.eles("css:div.text-ellipsis")
-            logger.debug(f"div.text-ellipsis 查找结果: {len(nodes) if nodes else 0} 个")
-            for it in nodes or []:
-                txt = it.text or ""
-                if txt.strip():
-                    options_list.append(txt.strip())
-
-        # 如果还是没有找到，尝试从 select 元素获取
-        if not options_list:
-            term_dropdown = iframe.ele(
-                'css:select[data-testid="uicl-select"]', timeout=2
-            )
+            term_dropdown = _find_template_term_native_select(iframe)
             if term_dropdown:
                 try:
                     option_elements = term_dropdown.eles("css:option")
-                    logger.debug(f"<select> option 查找结果: {len(option_elements) if option_elements else 0} 个")
                     for opt in option_elements or []:
                         txt = opt.text or opt.attr("value") or ""
                         if txt.strip():
@@ -70,33 +395,12 @@ def get_template_term_options(iframe, tab=None) -> list[str]:
                 except Exception:
                     pass
 
-        # 去重并过滤占位符（Select 等只是 UI 占位符，不是真正的 Template Term）
-        seen = set()
-        _placeholder_norms = {
-            "",
-            "select",
-            "select template term",
-            "choose",
-            "please select",
-        }
-        unique_options = []
-        for opt in options_list:
-            norm = re.sub(r"\s+", " ", opt).strip().lower()
-            if norm not in seen and norm not in _placeholder_norms:
-                seen.add(norm)
-                unique_options.append(opt)
+        unique_options = _dedupe_options(options_list)
+        logger.info(
+            f"获取到 {len(unique_options)} 个 Template Term 选项: {unique_options}"
+        )
 
-        logger.info(f"获取到 {len(unique_options)} 个 Template Term 选项: {unique_options}")
-
-        # 获取完成后收起下拉框，恢复 UI 状态
-        try:
-            btn = iframe.ele(f'xpath:{TEMPLATE_TERM}', timeout=2)
-            if btn:
-                btn.click()
-                logger.debug("已收起 Template Term 下拉框")
-        except Exception:
-            pass
-
+        _close_template_term_dropdown(iframe, tab=tab)
         return unique_options
 
     except Exception as e:
@@ -105,59 +409,36 @@ def get_template_term_options(iframe, tab=None) -> list[str]:
 
 
 def _open_template_term_dropdown(iframe, tab=None):
-    """安全打开 Template Term 下拉框
-
-    Args:
-        iframe: iframe 对象，触发器按钮在 iframe 内
-        tab: 主页面 tab 对象，下拉层可能通过 portal 渲染在主文档中
-
-    Returns:
-        下拉列表元素对象，如果失败则返回 None
-    """
+    """安全打开 Template Term 下拉框，仅点击 Template Term 字段自身触发器。"""
     try:
-        # 先检查下拉层是否已存在（避免重复点击导致收起）
-        existing = None
-        if tab:
-            try:
-                existing = tab.ele(
-                    'xpath://div[@data-testid="uicl-multi-select-dropdown" or @role="listbox"]', timeout=1
-                )
-            except Exception:
-                pass
-        if not existing:
-            try:
-                existing = iframe.ele(
-                    'xpath://div[@data-testid="uicl-multi-select-dropdown" or @role="listbox"]', timeout=1
-                )
-            except Exception:
-                pass
-        if existing:
-            logger.debug("Template Term 下拉层已存在，直接返回")
-            return existing
-
-        # 使用 xpath 语法定位并点击展开下拉框
-        btn = iframe.ele(f'xpath:{TEMPLATE_TERM}', timeout=5)
-        if not btn:
+        trigger = _find_template_term_trigger(iframe)
+        if not trigger:
             logger.debug("未找到 Template Term 下拉框按钮")
             return None
-        btn.click()
-        logger.debug("已点击展开 Template Term 下拉框")
 
-        # 等待下拉层出现，优先从主文档（portal）查找
-        dropdown = None
-        if tab:
-            dropdown = tab.ele(
-                'xpath://div[@data-testid="uicl-multi-select-dropdown" or @role="listbox"]', timeout=3
-            )
-        # 如果 portal 中没找到，尝试在 iframe 内查找
-        if not dropdown:
-            dropdown = iframe.ele(
-                'xpath://div[@data-testid="uicl-multi-select-dropdown" or @role="listbox"]', timeout=2
-            )
+        if _trigger_is_expanded(trigger):
+            existing = _find_visible_template_term_dropdown(tab, iframe)
+            if existing:
+                logger.debug("Template Term 下拉层已展开且包含选项，直接返回")
+                return existing
+
+        visible = _find_visible_template_term_dropdown(tab, iframe)
+        if visible and not _trigger_is_expanded(trigger):
+            # 页面上有其他可见 dropdown，但不是 Template Term 展开态，忽略它
+            logger.debug("检测到其他可见 dropdown，仍将点击 Template Term 触发器")
+
+        if not _click_element(trigger):
+            logger.debug("点击 Template Term 触发器失败")
+            return None
+
+        logger.debug("已点击展开 Template Term 下拉框")
+        time.sleep(0.25)
+
+        dropdown = _find_visible_template_term_dropdown(tab, iframe)
         if dropdown:
             logger.debug("成功定位到 Template Term 下拉层")
         else:
-            logger.debug("点击后未找到 Template Term 下拉层")
+            logger.debug("点击后未找到可见的 Template Term 下拉层")
         return dropdown
     except Exception as e:
         logger.warning(f"打开 Template Term 下拉框失败: {e}")
@@ -170,7 +451,6 @@ def _read_options_from_select(select_ele) -> list[str]:
     try:
         opts = select_ele.eles("css:option")
         for opt in opts or []:
-            # 优先 text，其次 name 属性，最后 value
             txt = opt.text or opt.attr("name") or opt.attr("value") or ""
             if txt.strip():
                 options.append(txt.strip())
@@ -198,12 +478,10 @@ def fetch_template_term_options_from_url(browser) -> list[str]:
 
     try:
         tab.get(TEMPLATE_TERM_SOURCE_URL)
-        # 等待页面稳定（iframe / JS 渲染）
         time.sleep(3)
 
         all_options: list[str] = []
 
-        # 策略1: 通过 name 属性关键词查找 select 元素
         name_keywords = ["insertionOrderId", "term", "template", "contract", "ios"]
         for kw in name_keywords:
             try:
@@ -216,7 +494,6 @@ def fetch_template_term_options_from_url(browser) -> list[str]:
             except Exception:
                 continue
 
-        # 策略2: 通过 data-testid 查找
         if not all_options:
             for kw in ["uicl-select", "multi-select", "template"]:
                 try:
@@ -229,7 +506,6 @@ def fetch_template_term_options_from_url(browser) -> list[str]:
                 except Exception:
                     continue
 
-        # 策略3: 遍历页面上所有 select 元素，取第一个有有效选项的
         if not all_options:
             try:
                 selects = tab.eles("css:select")
@@ -242,40 +518,22 @@ def fetch_template_term_options_from_url(browser) -> list[str]:
             except Exception as e:
                 logger.debug(f"遍历 select 元素失败: {e}")
 
-        # 策略4: 如果没找到原生 select，尝试查找自定义下拉组件
         if not all_options:
             try:
-                # 尝试查找常见自定义下拉结构
                 dropdowns = tab.eles('css:[role="listbox"], [data-testid*="dropdown"]')
                 logger.debug(f"找到 {len(dropdowns)} 个自定义下拉组件")
                 for dd in dropdowns:
                     items = dd.eles('css:[role="option"], .text-ellipsis')
                     for it in items or []:
-                        txt = it.text or ""
-                        if txt.strip():
-                            all_options.append(txt.strip())
+                        txt = (it.text or "").strip()
+                        if txt:
+                            all_options.append(txt)
                     if all_options:
                         break
             except Exception as e:
                 logger.debug(f"查找自定义下拉组件失败: {e}")
 
-        # 去重并过滤占位符
-        seen = set()
-        _placeholder_norms = {
-            "",
-            "select",
-            "select template term",
-            "choose",
-            "please select",
-            "-- select --",
-        }
-        unique_options = []
-        for opt in all_options:
-            norm = re.sub(r"\s+", " ", opt).strip().lower()
-            if norm not in seen and norm not in _placeholder_norms:
-                seen.add(norm)
-                unique_options.append(opt)
-
+        unique_options = _dedupe_options(all_options)
         logger.info(
             f"从来源页面获取到 {len(unique_options)} 个 Template Term 选项: {unique_options}"
         )
@@ -285,7 +543,6 @@ def fetch_template_term_options_from_url(browser) -> list[str]:
         logger.error(f"从来源页面获取 Template Term 选项失败: {e}")
         return []
     finally:
-        # 恢复原始页面
         if original_url:
             try:
                 tab.get(original_url)
