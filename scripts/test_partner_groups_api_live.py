@@ -88,8 +88,8 @@ def main() -> int:
 
     cfg = ConfigManager(base_dir=str(_ROOT))
     settings = cfg.load_settings()
-    pg = settings.get("partner_groups") or {}
-    if (pg.get("mode") or "ui").lower() != "api":
+    pg = settings.partner_groups
+    if pg.mode.lower() != "api":
         logger.warning("settings 中 partner_groups.mode 不是 api，仍将按 api 逻辑调用（使用当前 partner_groups.api 配置）")
 
     try:
@@ -129,7 +129,7 @@ def main() -> int:
         set_partner_group_via_api(
             iframe,
             group,
-            pg,
+            pg.model_dump(),
             debug=True,
             creator_psi_override=psi_override,
         )

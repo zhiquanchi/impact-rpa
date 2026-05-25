@@ -246,8 +246,9 @@ class TemplateTermSelector:
             return
         try:
             settings = self.config.load_settings()
-            settings["template_term"] = label
-            self.config.save_settings(settings)
+            self.config.save_settings(
+                settings.model_copy(update={"template_term": label})
+            )
         except Exception as e:
             logger.warning(f"持久化 Template Term 选择失败: {e}")
 

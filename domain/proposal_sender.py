@@ -8,6 +8,7 @@ import questionary
 from loguru import logger
 from rich.panel import Panel
 
+from core.settings_models import AppSettings, PartnerGroupsSettings
 from domain.date_picker import DatePicker
 from domain.proposal_modal_service import ProposalModalService
 from domain.selectors import MODAL_IFRAME_SELECTOR
@@ -212,13 +213,12 @@ class ProposalSender:
             logger.warning(f"检查滚动进度失败: {e}")
             return {"is_stuck": False, "progress_type": "error", "details": str(e)}
 
-    def _apply_settings(self, settings: dict) -> None:
+    def _apply_settings(self, settings: AppSettings) -> None:
         """将 settings 应用到实例字段（支持热刷新）。"""
-        self.modal_wait_timeout = float(settings.get("modal_wait", 20.0))
-        self.scroll_delay = float(settings.get("scroll_delay", 1.0))
-        # template_term：读取配置值，为空时使用默认值并记录警告
-        raw_term = settings.get("template_term")
-        if not raw_term or not str(raw_term).strip():
+        self.modal_wait_timeout = settings.modal_wait
+        self.scroll_delay = settings.scroll_delay
+        raw_term = settings.template_term
+        if not raw_term or not raw_term.strip():
             self.template_term = ""
             logger.warning(
                 "⚠️  Template Term 未在设置中配置！\n"
@@ -226,32 +226,16 @@ class ProposalSender:
                 "    系统将使用默认值 'Commission Tier Terms'，但建议通过确认弹窗明确选择。"
             )
         else:
-            self.template_term = str(raw_term).strip()
-        self.input_partner_groups_tag = bool(
-            settings.get("input_partner_groups_tag", True)
-        )
-        self.partner_groups_debug_logging = bool(
-            settings.get("partner_groups_debug_logging", False)
-        )
-        self.dry_run = bool(settings.get("dry_run", False))
-        default_pg: dict = {"mode": "ui", "api": {}, "id_by_name": {}}
-        user_pg = settings.get("partner_groups")
-        if isinstance(user_pg, dict):
-            merged = {**default_pg, **user_pg}
-            api_u = user_pg.get("api")
-            if isinstance(api_u, dict):
-                merged["api"] = {**(default_pg.get("api") or {}), **api_u}
-            id_u = user_pg.get("id_by_name")
-            if isinstance(id_u, dict):
-                merged["id_by_name"] = {**(default_pg.get("id_by_name") or {}), **id_u}
-            self.partner_groups = merged
-        else:
-            self.partner_groups = dict(default_pg)
+            self.template_term = raw_term.strip()
+        self.input_partner_groups_tag = settings.input_partner_groups_tag
+        self.partner_groups_debug_logging = settings.partner_groups_debug_logging
+        self.dry_run = settings.dry_run
+        self.partner_groups = settings.partner_groups
 
-    def refresh_from_settings(self, settings: dict) -> None:
+    def refresh_from_settings(self, settings: AppSettings) -> None:
         """配置变更时刷新运行期字段（无需重启进程）。"""
         try:
-            self._apply_settings(settings or {})
+            self._apply_settings(settings)
         except Exception:
             pass
 
@@ -1965,15 +1949,17 @@ class ProposalSender:
 
     def _apply_partner_group(self, iframe, selected_tab: str) -> None:
         """根据配置使用 UI 下拉或直连 API 设置 Partner Group。"""
-        pg = getattr(self, "partner_groups", None) or {}
-        mode = (pg.get("mode") or "ui").strip().lower()
+        pg: PartnerGroupsSettings = getattr(
+            self, "partner_groups", PartnerGroupsSettings()
+        )
+        mode = pg.mode.strip().lower()
         if mode == "api":
             from domain.partner_groups_api import set_partner_group_via_api
 
             set_partner_group_via_api(
                 iframe,
                 selected_tab,
-                pg,
+                pg.model_dump(),
                 debug=bool(getattr(self, "partner_groups_debug_logging", False)),
             )
             return

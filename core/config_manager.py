@@ -3,6 +3,9 @@ import os
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from pydantic import ValidationError
+
+from core.settings_models import AppSettings
 
 if TYPE_CHECKING:
     from core.config_store import ConfigStore
@@ -24,63 +27,13 @@ class ConfigManager:
         # 可选：由组合根注入，用于配置热更新
         self.store: ConfigStore | None = None
 
-        self.default_settings = {
-            "max_proposals": 10,
-            "scroll_delay": 1.0,
-            "click_delay": 0.5,
-            "modal_wait": 20.0,
-            "dry_run": False,
-            "template_term": "",
-            "input_partner_groups_tag": True,
-            # 是否输出 Partner Groups 下拉解析与点击的详细调试日志
-            "partner_groups_debug_logging": False,
-            # Partner Groups 批量创建一次性补全标记（理论上每台配置只需跑一次）
-            "partner_groups_batch_create_done": False,
-            "partner_groups": {
-                "mode": "ui",
-                "api": {
-                    "url": "",
-                    "method": "POST",
-                    "headers": {},
-                    "body": None,
-                    "csrf_meta_selector": "",
-                    "csrf_header_name": "X-CSRF-Token",
-                    "success_status_min": 200,
-                    "success_status_max": 299,
-                },
-                "id_by_name": {},
-            },
-            "screenshot_on_error": True,
-            "screenshot_full_page": False,
-            "vision_rpa": {
-                "enabled": False,
-                "api_key": "",
-                "base_url": "",
-                "model": "gpt-4o",
-                "max_tokens": 1024,
-                "temperature": 0.1,
-                "timeout": 30,
-                "browser_ui_offset_x": 0,
-                "browser_ui_offset_y": 0,
-            },
-            "notifications": {
-                "enabled": True,
-                "on_complete": True,
-                "on_error": True,
-                "on_early_exit": True,
-                "channels": [
-                    {
-                        "type": "feishu",
-                        "enabled": True,
-                        "webhook_url": "",
-                    }
-                ],
-            },
-        }
-
         os.makedirs(self.config_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
         self._setup_logger()
+
+    @property
+    def default_settings(self) -> AppSettings:
+        return AppSettings()
 
     def _setup_logger(self) -> None:
         if ConfigManager._file_logger_configured:
@@ -95,19 +48,22 @@ class ConfigManager:
         )
         ConfigManager._file_logger_configured = True
 
-    def load_settings(self) -> dict[str, object]:
+    def load_settings(self) -> AppSettings:
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, "r", encoding="utf-8") as f:
-                    return {**self.default_settings, **json.load(f)}
+                    raw = json.load(f) or {}
+                return AppSettings.model_validate(raw)
+        except ValidationError as e:
+            logger.error(f"加载设置失败（校验错误）: {e}")
         except Exception as e:
             logger.error(f"加载设置失败: {e}")
-        return self.default_settings.copy()
+        return AppSettings()
 
-    def save_settings(self, settings: dict[str, object]) -> bool:
+    def save_settings(self, settings: AppSettings) -> bool:
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=4)
+                json.dump(settings.model_dump(mode="json"), f, indent=4)
             logger.info("设置保存成功")
             try:
                 if self.store is not None:

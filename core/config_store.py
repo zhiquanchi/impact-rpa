@@ -7,9 +7,10 @@ from typing import Any
 from loguru import logger
 
 from core.config_manager import ConfigManager
+from core.settings_models import AppSettings
 
 ConfigKind = str  # "settings" | "templates"
-Subscriber = Callable[[ConfigKind, dict], None]
+Subscriber = Callable[[ConfigKind, AppSettings | dict[str, Any]], None]
 
 
 class ConfigStore:
@@ -25,7 +26,7 @@ class ConfigStore:
         self._config = config
         self._lock = threading.RLock()
 
-        self._settings_cache: dict[str, Any] | None = None
+        self._settings_cache: AppSettings | None = None
         self._templates_cache: dict[str, Any] | None = None
 
         self._mtimes: dict[str, float | None] = {
@@ -49,11 +50,11 @@ class ConfigStore:
         with self._lock:
             self._subscribers[kind].append(callback)
 
-    def get_settings(self) -> dict[str, Any]:
+    def get_settings(self) -> AppSettings:
         with self._lock:
             if self._settings_cache is None:
                 self._reload_settings_locked(notify=False)
-            return dict(self._settings_cache or {})
+            return self._settings_cache or AppSettings()
 
     def get_templates_data(self) -> dict[str, Any]:
         with self._lock:
@@ -61,7 +62,7 @@ class ConfigStore:
                 self._reload_templates_locked(notify=False)
             return dict(self._templates_cache or {})
 
-    def force_reload_settings(self) -> dict[str, Any]:
+    def force_reload_settings(self) -> AppSettings:
         with self._lock:
             return self._reload_settings_locked(notify=True)
 
@@ -136,25 +137,30 @@ class ConfigStore:
             changed = True
         return changed
 
-    def _notify_locked(self, kind: ConfigKind, payload: dict[str, Any]) -> None:
+    def _notify_locked(
+        self, kind: ConfigKind, payload: AppSettings | dict[str, Any]
+    ) -> None:
         callbacks = list(self._subscribers.get(kind, []))
         # 避免订阅者异常阻塞 watcher
         for cb in callbacks:
             try:
-                cb(kind, dict(payload))
+                if kind == "settings" and isinstance(payload, AppSettings):
+                    cb(kind, payload)
+                else:
+                    cb(kind, dict(payload))  # type: ignore[arg-type]
             except Exception as e:
                 logger.debug(f"ConfigStore subscriber error(kind={kind}): {e}")
 
     # ----------------------------
     # Internal: reload
     # ----------------------------
-    def _reload_settings_locked(self, notify: bool) -> dict[str, Any]:
-        settings = self._config.load_settings() or {}
+    def _reload_settings_locked(self, notify: bool) -> AppSettings:
+        settings = self._config.load_settings()
         if settings != self._settings_cache:
-            self._settings_cache = dict(settings)
+            self._settings_cache = settings
             if notify:
                 self._notify_locked("settings", self._settings_cache)
-        return dict(self._settings_cache or {})
+        return self._settings_cache or AppSettings()
 
     def _reload_templates_locked(self, notify: bool) -> dict[str, Any]:
         data: dict[str, Any] = {"templates": [], "active_template_id": None}

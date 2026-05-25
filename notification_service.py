@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from core.notification.factory import create_channels
 from core.notification.types import ProposalRunEvent, ProposalRunPayload
+from core.settings_models import AppSettings
 
 
 class NotificationPayload(BaseModel):
@@ -31,29 +32,28 @@ class NotificationService:
     def notify_proposal_run(
         self,
         *,
-        settings: dict[str, object],
+        settings: AppSettings,
         clicked_count: int,
         completed_all: bool,
         error_message: str | None = None,
         mode: str | None = None,
     ) -> None:
-        notif_cfg_raw = settings.get("notifications")
-        notif_cfg = notif_cfg_raw if isinstance(notif_cfg_raw, dict) else {}
+        notif = settings.notifications
 
-        if not notif_cfg.get("enabled", True):
+        if not notif.enabled:
             return
 
         if error_message:
             event = ProposalRunEvent.ERROR
-            if not notif_cfg.get("on_error", True):
+            if not notif.on_error:
                 return
         elif completed_all:
             event = ProposalRunEvent.COMPLETE
-            if not notif_cfg.get("on_complete", True):
+            if not notif.on_complete:
                 return
         else:
             event = ProposalRunEvent.EARLY_EXIT
-            if not notif_cfg.get("on_early_exit", True):
+            if not notif.on_early_exit:
                 return
 
         payload = ProposalRunPayload(
@@ -61,9 +61,7 @@ class NotificationService:
             error_message=error_message,
             mode=mode,
         )
-        channels_raw = notif_cfg.get("channels", [])
-        channels_config = channels_raw if isinstance(channels_raw, list) else []
-        channels = create_channels(channels_config)
+        channels = create_channels([channel.model_dump() for channel in notif.channels])
         for channel in channels:
             try:
                 channel.send(event, payload)

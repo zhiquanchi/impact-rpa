@@ -11,6 +11,8 @@ from loguru import logger
 
 from exception_handler import exception_handler
 
+from core.settings_models import AppSettings
+
 
 class LogSink(Protocol):
     def info(self, message: str) -> None: ...
@@ -39,15 +41,15 @@ class BrowserManager:
             base_dir = None
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(__file__))
 
-        settings = {}
+        settings = AppSettings()
         try:
             if config:
-                settings = config.load_settings() or {}
+                settings = config.load_settings()
         except Exception:
-            settings = {}
+            settings = AppSettings()
 
-        self.screenshot_on_error = bool(settings.get('screenshot_on_error', True))
-        self.screenshot_full_page = bool(settings.get('screenshot_full_page', False))
+        self.screenshot_on_error = settings.screenshot_on_error
+        self.screenshot_full_page = settings.screenshot_full_page
         self.screenshot_dir = os.path.join(self.base_dir, 'logs', 'screenshots')
         os.makedirs(self.screenshot_dir, exist_ok=True)
         self._last_screenshot_ts = 0.0
