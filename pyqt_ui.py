@@ -34,7 +34,13 @@ from PyQt6.QtWidgets import (
 
 from core.config_manager import ConfigManager
 from core.daily_sent_counter import DailySentCounter
-from core.settings_service import SettingsService, deep_merge
+from core.settings_models import (
+    AppSettings,
+    NotificationSettings,
+    SettingsDialogUpdate,
+    get_feishu_channel,
+)
+from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
@@ -70,24 +76,6 @@ def has_browser_process() -> bool:
             return False
 
     return False
-
-
-class SettingsFormModel(BaseModel):
-    max_proposals: int = Field(ge=1)
-    scroll_delay: float = Field(gt=0)
-    click_delay: float = Field(ge=0)
-    modal_wait: float = Field(gt=0)
-    dry_run: bool = False
-    input_partner_groups_tag: bool = True
-
-    @field_validator(
-        "max_proposals", "scroll_delay", "click_delay", "modal_wait", mode="before"
-    )
-    @classmethod
-    def _strip_numeric_inputs(cls, value):
-        if isinstance(value, str):
-            return value.strip()
-        return value
 
 
 class PositiveIntInputModel(BaseModel):
@@ -161,23 +149,8 @@ def validate_positive_float(
         raise ValueError(format_validation_error(exc, {"value": field_name})) from exc
 
 
-def get_notification_settings(
-    settings: dict[str, object], defaults: dict[str, object]
-) -> dict[str, object]:
-    notif_raw = settings.get("notifications")
-    notif = notif_raw if isinstance(notif_raw, dict) else {}
-    default_notif_raw = defaults.get("notifications")
-    default_notif = default_notif_raw if isinstance(default_notif_raw, dict) else {}
-    return deep_merge(default_notif, notif)
-
-
-def get_feishu_channel(notif_cfg: dict[str, object]) -> dict[str, object]:
-    channels_raw = notif_cfg.get("channels", [])
-    channels = channels_raw if isinstance(channels_raw, list) else []
-    for item in channels:
-        if isinstance(item, dict) and item.get("type") == "feishu":
-            return item
-    return {"type": "feishu", "enabled": False, "webhook_url": ""}
+def get_feishu_webhook_url(notif: NotificationSettings) -> str:
+    return get_feishu_channel(notif).webhook_url
 
 
 class FeishuWebhookDialog(QDialog):
@@ -260,7 +233,7 @@ class TemplateTermFetchWorker(QThread):
 class SettingsDialog(QDialog):
     def __init__(
         self,
-        snapshot: dict,
+        snapshot: AppSettings,
         browser=None,
         config: ConfigManager | None = None,
         parent=None,
@@ -268,6 +241,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.browser = browser
         self.config = config
+        self._base = snapshot
         self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self.setWindowTitle("系统设置")
         self.setFixedSize(420, 400)
@@ -275,24 +249,22 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
 
-        self.max_proposals_input = QLineEdit(str(snapshot.get("max_proposals", 10)))
-        self.scroll_delay_input = QLineEdit(str(snapshot.get("scroll_delay", 1.0)))
-        self.click_delay_input = QLineEdit(str(snapshot.get("click_delay", 0.5)))
-        self.modal_wait_input = QLineEdit(str(snapshot.get("modal_wait", 20.0)))
+        self.max_proposals_input = QLineEdit(str(snapshot.max_proposals))
+        self.scroll_delay_input = QLineEdit(str(snapshot.scroll_delay))
+        self.click_delay_input = QLineEdit(str(snapshot.click_delay))
+        self.modal_wait_input = QLineEdit(str(snapshot.modal_wait))
         self.dry_run_check = QCheckBox("启用 Dry Run（只跑流程，不提交）")
-        self.dry_run_check.setChecked(bool(snapshot.get("dry_run", False)))
+        self.dry_run_check.setChecked(snapshot.dry_run)
         self.partner_groups_check = QCheckBox(
             "在 Proposal 弹窗内输入 Partner Groups 标签"
         )
-        self.partner_groups_check.setChecked(
-            bool(snapshot.get("input_partner_groups_tag", True))
-        )
+        self.partner_groups_check.setChecked(snapshot.input_partner_groups_tag)
 
         # Template Term 可编辑下拉框 + 获取按钮
         term_layout = QHBoxLayout()
         self.term_combo = QComboBox()
         self.term_combo.setEditable(True)
-        current_term = snapshot.get("template_term", "")
+        current_term = snapshot.template_term
         # 从缓存文件加载历史选项
         cached_terms: list[str] = self._load_cached_terms()
         if cached_terms:
@@ -458,9 +430,9 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
-    def get_settings(self) -> dict:
+    def get_settings(self) -> AppSettings:
         try:
-            settings = SettingsFormModel.model_validate(
+            validated = SettingsDialogUpdate.model_validate(
                 {
                     "max_proposals": self.max_proposals_input.text(),
                     "scroll_delay": self.scroll_delay_input.text(),
@@ -483,9 +455,12 @@ class SettingsDialog(QDialog):
                 )
             ) from exc
 
-        result = settings.model_dump()
-        result["template_term"] = self.term_combo.currentText()
-        return result
+        return self._base.model_copy(
+            update={
+                **validated.model_dump(),
+                "template_term": self.term_combo.currentText(),
+            }
+        )
 
     @staticmethod
     def _parse_positive_int(value: str, field_name: str) -> int:
@@ -1343,69 +1318,67 @@ class MainWindow(QMainWindow):
 
     def refresh_settings_inputs(self) -> None:
         settings = self.settings_service.get_snapshot()
-        default_max = str(settings.get("max_proposals", 10))
+        default_max = str(settings.max_proposals)
         for widget in (self.list_max_count_input, self.search_max_count_input):
             if not widget.text().strip() or widget.text().strip() == "10":
                 widget.setText(default_max)
-        template_term = settings.get("template_term", "-")
-        term_text = template_term if isinstance(template_term, str) else str(template_term)
+        term_text = settings.template_term or "-"
         self.stat_term_label.setText(term_text)
         self.stat_term_label.setToolTip(term_text)
         self._sync_notification_ui_from_settings()
 
-    def _get_notification_settings(self) -> dict[str, object]:
-        settings = self.settings_service.get_snapshot()
-        return get_notification_settings(settings, self.config.default_settings)
+    def _get_notification_settings(self) -> NotificationSettings:
+        return self.settings_service.get_snapshot().notifications
 
     def _get_feishu_webhook_url(self) -> str:
-        feishu = get_feishu_channel(self._get_notification_settings())
-        webhook_url = feishu.get("webhook_url", "")
-        return webhook_url if isinstance(webhook_url, str) else str(webhook_url)
+        return get_feishu_webhook_url(self._get_notification_settings())
 
     def _update_notification_settings(self, **kwargs: object) -> None:
         settings = self.settings_service.get_snapshot()
         notif = self._get_notification_settings()
+        updates: dict[str, object] = {}
 
         for key in ("enabled", "on_complete", "on_error", "on_early_exit"):
             if key in kwargs:
-                notif[key] = kwargs[key]
+                updates[key] = kwargs[key]
 
+        new_channels = list(notif.channels)
         if "feishu_enabled" in kwargs or "webhook_url" in kwargs:
-            channels_raw = notif.get("channels", [])
-            channels = channels_raw if isinstance(channels_raw, list) else []
             feishu = get_feishu_channel(notif)
             if "feishu_enabled" in kwargs:
-                feishu["enabled"] = bool(kwargs["feishu_enabled"])
+                feishu = feishu.model_copy(update={"enabled": bool(kwargs["feishu_enabled"])})
             if "webhook_url" in kwargs:
                 webhook_url = kwargs["webhook_url"]
-                feishu["webhook_url"] = (
-                    webhook_url if isinstance(webhook_url, str) else str(webhook_url)
+                feishu = feishu.model_copy(
+                    update={
+                        "webhook_url": (
+                            webhook_url if isinstance(webhook_url, str) else str(webhook_url)
+                        )
+                    }
                 )
             new_channels = [
-                item
-                for item in channels
-                if not (isinstance(item, dict) and item.get("type") == "feishu")
+                channel for channel in new_channels if channel.type != "feishu"
             ]
             new_channels.append(feishu)
-            notif["channels"] = new_channels
 
-        settings["notifications"] = notif
-        self.settings_service.save(settings)
+        if new_channels is not notif.channels:
+            updates["channels"] = new_channels
+
+        new_notif = notif.model_copy(update=updates)
+        self.settings_service.save(settings.model_copy(update={"notifications": new_notif}))
 
     def _sync_notification_ui_from_settings(self) -> None:
         notif = self._get_notification_settings()
         feishu = get_feishu_channel(notif)
-        master_enabled = bool(notif.get("enabled", True))
+        master_enabled = notif.enabled
 
         self._syncing_notification_ui = True
         try:
             self.notif_enabled_check.setChecked(master_enabled)
-            self.notif_on_complete_check.setChecked(bool(notif.get("on_complete", True)))
-            self.notif_on_error_check.setChecked(bool(notif.get("on_error", True)))
-            self.notif_on_early_exit_check.setChecked(
-                bool(notif.get("on_early_exit", True))
-            )
-            self.notif_feishu_check.setChecked(bool(feishu.get("enabled", False)))
+            self.notif_on_complete_check.setChecked(notif.on_complete)
+            self.notif_on_error_check.setChecked(notif.on_error)
+            self.notif_on_early_exit_check.setChecked(notif.on_early_exit)
+            self.notif_feishu_check.setChecked(feishu.enabled)
 
             self.notif_channel_group.setEnabled(master_enabled)
             self.notif_trigger_group.setEnabled(master_enabled)
@@ -1595,9 +1568,7 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec():
             try:
-                snapshot = self.settings_service.get_snapshot()
-                snapshot.update(dialog.get_settings())
-                if not self.settings_service.save(snapshot):
+                if not self.settings_service.save(dialog.get_settings()):
                     raise RuntimeError("保存设置失败")
                 self.refresh_all()
                 QMessageBox.information(self, "成功", "设置已保存")
@@ -1666,8 +1637,7 @@ class MainWindow(QMainWindow):
 
         # 获取当前 Template Term 设置
         settings = self.settings_service.get_snapshot()
-        template_term = settings.get("template_term", "")
-        current_term = template_term if isinstance(template_term, str) else str(template_term)
+        current_term = settings.template_term
 
         # 获取 Template Term 选项（需要浏览器连接）
         term_options: list[str] = []
@@ -1700,8 +1670,7 @@ class MainWindow(QMainWindow):
     def _ensure_template_term(self) -> bool:
         """确保 Template Term 已配置，未配置时弹出强制选择对话框"""
         settings = self.settings_service.get_snapshot()
-        template_term = settings.get("template_term", "")
-        current_term = template_term if isinstance(template_term, str) else str(template_term)
+        current_term = settings.template_term
         if current_term:
             return True
 
@@ -1759,8 +1728,9 @@ class MainWindow(QMainWindow):
             return False
 
         selected = combo.currentText()
-        settings["template_term"] = selected
-        self.settings_service.save(settings)
+        self.settings_service.save(
+            settings.model_copy(update={"template_term": selected})
+        )
         self.refresh_settings_inputs()
         self.log_message(f"已配置 Template Term: {selected}", "info")
         return True
@@ -1792,8 +1762,9 @@ class MainWindow(QMainWindow):
         # 如果用户选择了新的 Template Term，更新设置
         if selected_term:
             settings = self.settings_service.get_snapshot()
-            settings["template_term"] = selected_term
-            self.settings_service.save(settings)
+            self.settings_service.save(
+                settings.model_copy(update={"template_term": selected_term})
+            )
             self.log_message(f"已更新 Template Term 为: {selected_term}", "info")
 
         self.log_message(
