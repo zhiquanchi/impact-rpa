@@ -6,6 +6,8 @@ from loguru import logger
 class ConfigManager:
     """配置管理类，负责处理所有配置文件的读写。"""
 
+    _file_logger_configured = False
+
     def __init__(self, base_dir: str | None = None):
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(__file__))
         self.config_dir = os.path.join(self.base_dir, "config")
@@ -63,6 +65,8 @@ class ConfigManager:
         self._setup_logger()
 
     def _setup_logger(self) -> None:
+        if ConfigManager._file_logger_configured:
+            return
         logger.add(
             os.path.join(self.log_dir, "impact_rpa_{time:YYYY-MM-DD}.log"),
             rotation="1 day",
@@ -71,6 +75,7 @@ class ConfigManager:
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
             encoding="utf-8",
         )
+        ConfigManager._file_logger_configured = True
 
     def load_settings(self) -> dict:
         try:

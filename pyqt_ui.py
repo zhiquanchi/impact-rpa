@@ -32,52 +32,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from core.config_manager import ConfigManager
+from core.daily_sent_counter import DailySentCounter
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
 from infra.browser_manager import BrowserManager
 from ui.output_bridge import OutputBridge
-
-
-def count_today_sent(config: ConfigManager) -> int:
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    log_dir = Path(config.log_dir)
-    log_file = log_dir / f"impact_rpa_{today_str}.log"
-    success_markers = (
-        "已点击 Send Proposal 按钮",
-        "发送成功: row=",
-    )
-    count = 0
-
-    try:
-        if log_file.exists():
-            with log_file.open("r", encoding="utf-8") as f:
-                for line in f:
-                    if any(marker in line for marker in success_markers):
-                        count += 1
-    except Exception:
-        pass
-
-    if count > 0:
-        return count
-
-    try:
-        for filepath in log_dir.iterdir():
-            if not filepath.name.startswith(
-                "creator_search_sent_"
-            ) or not filepath.name.endswith(".json"):
-                continue
-            with filepath.open("r", encoding="utf-8") as f:
-                records = json.load(f)
-            for record in records:
-                timestamp = str(record.get("timestamp", ""))
-                if timestamp.startswith(today_str):
-                    count += 1
-    except Exception:
-        pass
-
-    return count
 
 
 def has_browser_process() -> bool:
@@ -215,9 +176,16 @@ class TemplateTermFetchWorker(QThread):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, snapshot: dict, browser=None, parent=None):
+    def __init__(
+        self,
+        snapshot: dict,
+        browser=None,
+        config: ConfigManager | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.browser = browser
+        self.config = config
         self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self.setWindowTitle("系统设置")
         self.setFixedSize(420, 400)
@@ -382,8 +350,9 @@ class SettingsDialog(QDialog):
 
     def _get_terms_file_path(self) -> Path:
         """获取 Template Terms 缓存文件路径"""
-        config = ConfigManager()
-        return Path(config.template_terms_file)
+        if self.config is not None:
+            return Path(self.config.template_terms_file)
+        return Path(ConfigManager().template_terms_file)
 
     def _load_cached_terms(self) -> list[str]:
         """从缓存文件加载 Template Term 选项列表"""
@@ -903,6 +872,9 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.get_stylesheet())
 
         self.config = ConfigManager()
+        self.daily_sent_counter = DailySentCounter(
+            Path(self.config.config_dir) / "daily_sent.json"
+        )
         self.settings_service = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
         self.browser: BrowserManager | None = None
@@ -926,7 +898,7 @@ class MainWindow(QMainWindow):
         self.refresh_timer.timeout.connect(self.refresh_runtime_state)
         self.refresh_timer.start(10000)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event) -> None: # type: ignore[override]
         self.output_bridge.uninstall_loguru_sink()
         super().closeEvent(event)
 
@@ -1251,7 +1223,7 @@ class MainWindow(QMainWindow):
         self.stat_term_label.setToolTip(settings.get("template_term", "-"))
 
     def refresh_runtime_state(self) -> None:
-        self.stat_sent_label.setText(str(count_today_sent(self.config)))
+        self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
         self.refresh_templates()
         self.refresh_settings_inputs()
         self._start_browser_probe()
@@ -1345,7 +1317,7 @@ class MainWindow(QMainWindow):
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(
-            self.settings_service.get_snapshot(), self.browser, self
+            self.settings_service.get_snapshot(), self.browser, self.config, self
         )
         if dialog.exec():
             try:
@@ -1598,6 +1570,9 @@ class MainWindow(QMainWindow):
             self.log_message(
                 f"任务结束，当前批次共发送 {clicked_count} 个 Proposal", "warn"
             )
+
+        if clicked_count > 0:
+            self.daily_sent_counter.add(clicked_count)
 
         self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()
