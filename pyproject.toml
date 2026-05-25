@@ -23,3 +23,36 @@ vision = [
     "pyautogui>=0.9.54",
     "pillow>=10.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.6",
+    "ruff>=0.15.14",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/test_partner_groups_comparison.py" = ["E402"]
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = "none"
+exclude = [
+    ".venv",
+    "legacy_main.py",
+    "legacy_main.py.bak",
+    "scripts/**",
+    "domain/**",
+    "infra/**",
+    "ui/**",
+    "check_port.py",
+    "main.py",
+]
