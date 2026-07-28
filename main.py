@@ -44,6 +44,7 @@ from core.settings_models import (
 )
 from core.settings_service import SettingsService
 from core.template_manager import TemplateManager
+from domain.invite_campaign_service import InviteCampaignService
 from domain.proposal_sender import ProposalSender
 from domain.selectors import MODAL_IFRAME_SELECTOR
 from infra.browser_manager import BrowserManager
@@ -1018,6 +1019,83 @@ class TaskWorker(QThread):
             self.task_done.emit(0, False, str(e))
 
 
+class InviteCampaignWorker(QThread):
+    """批量邀请到 Campaign 的后台 Worker。"""
+
+    task_done = pyqtSignal(int, bool, str)
+
+    def __init__(
+        self,
+        browser: BrowserManager,
+        campaign_name: str,
+        message: str | None,
+        max_count: int,
+        start_index: int,
+        output_bridge: OutputBridge,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.browser = browser
+        self.campaign_name = campaign_name
+        self.message = message
+        self.max_count = max_count
+        self.start_index = start_index
+        self.output_bridge = output_bridge
+        self._stop_requested = False
+        self.invite_service: InviteCampaignService | None = None
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    def run(self) -> None:
+        from loguru import logger
+
+        success_count = 0
+        error_message = ""
+        completed_all = False
+
+        try:
+            with self.output_bridge.scoped_redirect():
+                self.invite_service = InviteCampaignService(self.browser)
+
+                for i in range(self.max_count):
+                    if self._stop_requested:
+                        logger.info("收到停止请求，结束任务")
+                        break
+
+                    card_index = self.start_index + i
+                    logger.info(
+                        f"开始邀请第 {i + 1}/{self.max_count} 个（卡片序号 {card_index}）"
+                    )
+
+                    result = self.invite_service.invite(
+                        campaign_name=self.campaign_name,
+                        message=self.message,
+                        card_index=card_index,
+                    )
+
+                    if result.success:
+                        success_count += 1
+                        logger.success(
+                            f"  ✓ 邀请成功 (HTTP {result.status_code})"
+                        )
+                        if result.influencer_id:
+                            logger.info(f"    Influencer ID: {result.influencer_id}")
+                    else:
+                        logger.error(f"  ✗ 邀请失败: {result.message}")
+                        if result.status_code is not None:
+                            logger.error(f"    HTTP 状态码: {result.status_code}")
+
+                else:
+                    completed_all = True
+
+                self.output_bridge.flush_stdio()
+
+            self.task_done.emit(success_count, completed_all, error_message)
+        except Exception as e:
+            self.task_done.emit(success_count, False, str(e))
+
+
 class MainWindow(QMainWindow):
     bridge_log = pyqtSignal(str, str)
 
@@ -1039,7 +1117,7 @@ class MainWindow(QMainWindow):
         self.settings_service = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
         self.browser: BrowserManager | None = None
-        self.worker: TaskWorker | None = None
+        self.worker: QThread | None = None
         self.probe_worker: BrowserProbeWorker | None = None
         self.connect_worker: BrowserConnectWorker | None = None
         self._cached_browser_connected = False
@@ -1097,6 +1175,10 @@ class MainWindow(QMainWindow):
             self.list_start_idx_input,
             self.search_max_count_input,
             self.search_start_row_input,
+            self.invite_campaign_name_input,
+            self.invite_max_count_input,
+            self.invite_start_idx_input,
+            self.invite_message_input,
         ]
         for widget in self._lock_widgets:
             widget.installEventFilter(self)
@@ -1220,7 +1302,7 @@ class MainWindow(QMainWindow):
             QTabBar::tab:!selected {
                 background-color: #34495E;
             }
-            QWidget#list_tab, QWidget#search_tab {
+            QWidget#list_tab, QWidget#search_tab, QWidget#invite_tab {
                 background-color: #ECF0F1;
             }
         """)
@@ -1246,6 +1328,26 @@ class MainWindow(QMainWindow):
             QLabel("提示: Creator Search 模式，请先在浏览器内完成筛选。")
         )
         self.tab_widget.addTab(search_tab, "Creator Search 表格发送")
+
+        invite_tab = QWidget()
+        invite_tab.setObjectName("invite_tab")
+        invite_layout = QFormLayout(invite_tab)
+        self.invite_campaign_name_input = QLineEdit(
+            "TORRAS Japan - Phone Accessories Creator Program"
+        )
+        # TODO: 支持从下拉列表选择 Campaign，目前先固定为默认值
+        self.invite_campaign_name_input.setPlaceholderText("输入 Campaign 名称")
+        self.invite_max_count_input = QLineEdit("10")
+        self.invite_start_idx_input = QLineEdit("1")
+        self.invite_message_input = QTextEdit()
+        self.invite_message_input.setPlaceholderText("可选：个性化邀请消息")
+        self.invite_message_input.setMaximumHeight(80)
+        invite_layout.addRow("Campaign Name:", self.invite_campaign_name_input)
+        invite_layout.addRow("发送数量 (Max Count):", self.invite_max_count_input)
+        invite_layout.addRow("起始序号 (Start Index):", self.invite_start_idx_input)
+        invite_layout.addRow("个性化消息 (Message):", self.invite_message_input)
+        invite_layout.addRow(QLabel("提示: 请确保浏览器已导航到 Impact 目标列表页。"))
+        self.tab_widget.addTab(invite_tab, "邀请到 Campaign")
 
         task_layout.addWidget(self.tab_widget)
 
@@ -1752,6 +1854,10 @@ class MainWindow(QMainWindow):
         self.list_start_idx_input.setEnabled(False)
         self.search_max_count_input.setEnabled(False)
         self.search_start_row_input.setEnabled(False)
+        self.invite_campaign_name_input.setEnabled(False)
+        self.invite_max_count_input.setEnabled(False)
+        self.invite_start_idx_input.setEnabled(False)
+        self.invite_message_input.setEnabled(False)
 
     def _unlock_interface(self) -> None:
         """解锁界面，恢复所有交互元素"""
@@ -1761,6 +1867,10 @@ class MainWindow(QMainWindow):
         self.list_start_idx_input.setEnabled(True)
         self.search_max_count_input.setEnabled(True)
         self.search_start_row_input.setEnabled(True)
+        self.invite_campaign_name_input.setEnabled(True)
+        self.invite_max_count_input.setEnabled(True)
+        self.invite_start_idx_input.setEnabled(True)
+        self.invite_message_input.setEnabled(True)
 
     def update_browser_status(self, connected: bool) -> None:
         self._cached_browser_connected = connected
@@ -1997,6 +2107,11 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
 
+        # 邀请到 Campaign 标签页
+        if self.tab_widget.currentIndex() == 2:
+            self._start_invite_task()
+            return
+
         # 强制检查 Template Term
         if not self._ensure_template_term():
             self.log_message("Template Term 未配置，任务取消", "warn")
@@ -2056,6 +2171,80 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.stop_btn.setText("强制停止")
 
+    def _start_invite_task(self) -> None:
+        """启动邀请到 Campaign 的批量任务。"""
+        # 验证输入
+        campaign_name = self.invite_campaign_name_input.text().strip()
+        if not campaign_name:
+            QMessageBox.warning(self, "输入错误", "请输入 Campaign 名称。")
+            return
+
+        try:
+            max_count = self.parse_positive_int(
+                self.invite_max_count_input.text(), "发送数量"
+            )
+            start_index = self.parse_positive_int(
+                self.invite_start_idx_input.text(), "起始序号"
+            )
+        except ValueError as e:
+            QMessageBox.warning(self, "输入错误", str(e))
+            return
+
+        message_text = self.invite_message_input.toPlainText().strip()
+        message = message_text if message_text else None
+
+        # 检查浏览器连接
+        browser = self.browser
+        if browser is None or not browser.is_connected():
+            self._prompt_connect_browser(
+                message="请先连接浏览器后再开始邀请任务。",
+            )
+            return
+
+        # 确认对话框
+        msg = (
+            f"确认批量邀请到 Campaign？\n\n"
+            f"Campaign: {campaign_name}\n"
+            f"发送数量: {max_count}\n"
+            f"起始序号: {start_index}\n"
+        )
+        if message:
+            msg += f"消息长度: {len(message)} 字符\n"
+        msg += "\n点击确定开始执行。"
+
+        reply = QMessageBox.question(
+            self,
+            "确认邀请",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self.log_message("用户取消邀请操作", "warn")
+            return
+
+        self.log_message(
+            f"开始邀请到 Campaign，目标数量: {max_count}，起始序号: {start_index}，"
+            f"Campaign: {campaign_name}",
+            "highlight",
+        )
+
+        self.worker = InviteCampaignWorker(
+            browser=browser,
+            campaign_name=campaign_name,
+            message=message,
+            max_count=max_count,
+            start_index=start_index,
+            output_bridge=self.output_bridge,
+            parent=self,
+        )
+        self.worker.task_done.connect(self.handle_invite_task_done)  # type: ignore[attr-defined]
+        self.worker.start()
+
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("执行中...")
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.setText("强制停止")
+
     def stop_task(self) -> None:
         if not self.worker or not self.worker.isRunning():
             return
@@ -2067,7 +2256,12 @@ class MainWindow(QMainWindow):
     def handle_task_done(
         self, clicked_count: int, completed_all: bool, error_message: str
     ) -> None:
-        if self.worker and self.worker.browser and self.worker.browser.is_connected():
+        if (
+            self.worker
+            and hasattr(self.worker, "browser")
+            and self.worker.browser
+            and self.worker.browser.is_connected()
+        ):
             self.browser = self.worker.browser
 
         self.start_btn.setText("开始执行")
@@ -2089,7 +2283,7 @@ class MainWindow(QMainWindow):
         try:
             from notification_service import NotificationService
 
-            mode = self.worker.mode if self.worker else None
+            mode = getattr(self.worker, "mode", None) if self.worker else None
             NotificationService().notify_proposal_run(
                 settings=self.settings_service.get_snapshot(),
                 clicked_count=clicked_count,
@@ -2099,6 +2293,36 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+
+        self.update_browser_status(self.detect_browser_connected())
+        self.refresh_runtime_state()
+        self.worker = None
+
+    def handle_invite_task_done(
+        self, success_count: int, completed_all: bool, error_message: str
+    ) -> None:
+        if (
+            self.worker
+            and hasattr(self.worker, "browser")
+            and self.worker.browser
+            and self.worker.browser.is_connected()
+        ):
+            self.browser = self.worker.browser
+
+        self.start_btn.setText("开始执行")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setText("强制停止")
+
+        if error_message:
+            self.log_message(f"任务执行失败: {error_message}", "error")
+        elif completed_all:
+            self.log_message(
+                f"任务完成，共邀请 {success_count} 个达人到 Campaign", "success"
+            )
+        else:
+            self.log_message(
+                f"任务结束，当前批次共邀请 {success_count} 个达人到 Campaign", "warn"
+            )
 
         self.update_browser_status(self.detect_browser_connected())
         self.refresh_runtime_state()
