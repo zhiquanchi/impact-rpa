@@ -1153,6 +1153,36 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._connect_browser(silent=True))
 
     def closeEvent(self, event) -> None: # type: ignore[override]
+        # 任务运行中时的关闭确认
+        if self.worker and self.worker.isRunning():
+            reply = QMessageBox.question(
+                self,
+                "确认退出",
+                "当前任务正在运行中，关闭窗口将终止任务。\n\n确定要退出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            # 尝试停止当前任务
+            try:
+                self.worker.request_stop()
+            except Exception:
+                pass
+        else:
+            # 普通关闭确认
+            reply = QMessageBox.question(
+                self,
+                "确认退出",
+                "确定要退出程序吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
         self.output_bridge.uninstall_loguru_sink()
         super().closeEvent(event)
 
