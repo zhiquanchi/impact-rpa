@@ -326,7 +326,8 @@ class InviteCampaignService:
         while time.time() - start < LISTENER_TIMEOUT:
             try:
                 packet = tab.listen.wait(timeout=1)
-                if packet is None:
+                # listen.wait 超时返回 False（非 None），需用真值判断
+                if not packet:
                     continue
 
                 if INVITE_API_URL_KEYWORD not in packet.url.lower():

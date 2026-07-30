@@ -112,7 +112,7 @@ class TemplateTermOptionsFetcher:
         """等待并返回目标 API 的网络包。"""
         deadline = time.time() + self.listen_timeout
         while time.time() < deadline:
-            # wait 方法会等待一个数据包，超时返回 None
+            # wait 方法会等待一个数据包，超时返回 False（非 None）
             packet = tab.listen.wait(timeout=min(1.0, deadline - time.time()))
             if packet and self.is_template_term_packet(packet):
                 return packet
