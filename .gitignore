@@ -16,6 +16,7 @@ config/mitmproxy/
 config/settings.json
 config/template.txt
 config/templates.json
+config/daily_sent.json
 
 # Logs and screenshots
 logs/
