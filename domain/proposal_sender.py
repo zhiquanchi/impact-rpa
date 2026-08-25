@@ -1328,6 +1328,8 @@ class ProposalSender:
                 self._apply_partner_group(iframe, selected_tab)
 
             self._submit_proposal(iframe)
+            # 表单提交完成后关闭侧边栏，才算完全完成
+            self._close_creator_slideout()
             return True
 
         except Exception as e:
