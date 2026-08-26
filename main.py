@@ -12,6 +12,7 @@ from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QMouseEvent, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -1013,6 +1015,7 @@ class TaskWorker(QThread):
         max_count: int,
         start_value: int,
         parent=None,
+        send_mode: str = "strip",
     ):
         super().__init__(parent)
         self.browser = browser
@@ -1021,6 +1024,7 @@ class TaskWorker(QThread):
         self.mode = mode
         self.max_count = max_count
         self.start_value = start_value
+        self.send_mode = send_mode
         self._stop_requested = False
         self.proposal_sender: ProposalSender | None = None
 
@@ -1048,6 +1052,7 @@ class TaskWorker(QThread):
                         template,
                         start_index=self.start_value,
                         skip_ready_prompt=True,
+                        send_mode=self.send_mode,
                     )
                 else:
                     result = self.proposal_sender.send_proposals_creator_search(
@@ -1389,6 +1394,21 @@ class MainWindow(QMainWindow):
         list_layout.addRow("发送数量 (Max Count):", self.list_max_count_input)
         list_layout.addRow("起始序号 (Start Index):", self.list_start_idx_input)
         list_layout.addRow(QLabel("提示: 请确保浏览器已导航到 Impact 目标列表页。"))
+
+        # 发送方式二选一：卡片页面直接点按钮 / 条状列表点卡片进侧边栏
+        self.list_send_mode_group = QButtonGroup(self)
+        self.list_send_mode_card = QRadioButton("卡片页面发送（卡片上直接有 Send Proposal 按钮）")
+        self.list_send_mode_strip = QRadioButton("条状发送（点卡片 → 侧边栏 → Send Proposal）")
+        self.list_send_mode_strip.setChecked(True)
+        self.list_send_mode_group.addButton(self.list_send_mode_card)
+        self.list_send_mode_group.addButton(self.list_send_mode_strip)
+        mode_widget = QWidget()
+        mode_layout = QHBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.addWidget(self.list_send_mode_card)
+        mode_layout.addWidget(self.list_send_mode_strip)
+        list_layout.addRow("发送方式:", mode_widget)
+
         self.tab_widget.addTab(list_tab, "列表页批量发送")
 
         search_tab = QWidget()
@@ -2199,6 +2219,11 @@ class MainWindow(QMainWindow):
         start_value = dialog.start_value
         selected_term = dialog.get_selected_term()
 
+        # 列表页发送方式：卡片页面直接点按钮 / 条状列表进侧边栏
+        send_mode = (
+            "card" if self.list_send_mode_card.isChecked() else "strip"
+        )
+
         # 如果用户选择了新的 Template Term，更新设置
         if selected_term:
             settings = self.settings_service.get_snapshot()
@@ -2210,7 +2235,8 @@ class MainWindow(QMainWindow):
 
         self.log_message(
             f"开始发送 Send Proposal，模式: {'列表页' if mode == 'list' else 'Creator Search'}，"
-            f"目标数量: {max_count}，{'起始序号' if mode == 'list' else '起始行号'}: {start_value}",
+            f"目标数量: {max_count}，{'起始序号' if mode == 'list' else '起始行号'}: {start_value}，"
+            f"发送方式: {'卡片页面' if send_mode == 'card' else '条状'}",
             "highlight",
         )
 
@@ -2229,6 +2255,7 @@ class MainWindow(QMainWindow):
             max_count,
             start_value,
             self,
+            send_mode=send_mode,
         )
         self.worker.task_done.connect(self.handle_task_done)
         self.worker.start()

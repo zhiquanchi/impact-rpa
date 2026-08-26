@@ -248,6 +248,82 @@ class ProposalSender:
         except Exception:
             pass
 
+    def _find_send_proposal_buttons(self) -> list:
+        """
+        在列表页查找可点击的 Send Proposal 按钮（多策略兜底，卡片模式）。
+
+        说明：Impact 的 DOM/测试 id 可能变动，单一 selector 容易导致一直"找不到按钮 → 滚动"。
+        """
+        results: list = []
+        seen: set[int] = set()
+
+        def _add(ele) -> None:
+            if not ele:
+                return
+            key = id(ele)
+            if key in seen:
+                return
+            seen.add(key)
+            results.append(ele)
+
+        # 策略1：优先按 uicl-button testid（历史实现）
+        try:
+            btns = self.browser.find_elements(
+                'css:button[data-testid="uicl-button"]', timeout=1.5
+            )
+            for b in btns or []:
+                try:
+                    if "Send Proposal" in ((b.text or "").strip()):
+                        _add(b)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 策略2：直接扫描所有 button 文本
+        if not results:
+            try:
+                btns = self.browser.find_elements("tag:button", timeout=1.5)
+                for b in btns or []:
+                    try:
+                        if "Send Proposal" in ((b.text or "").strip()):
+                            _add(b)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # 策略3：按文本定位到节点后向上找 button/role=button
+        if not results:
+            try:
+                nodes = self.browser.find_elements("text:Send Proposal", timeout=1.5)
+                for n in nodes or []:
+                    cur = n
+                    for _ in range(8):
+                        if not cur:
+                            break
+                        try:
+                            tag = getattr(cur, "tag", None)
+                            if isinstance(tag, str) and tag.lower() == "button":
+                                _add(cur)
+                                break
+                        except Exception:
+                            pass
+                        try:
+                            if (cur.attr("role") or "").strip().lower() == "button":
+                                _add(cur)
+                                break
+                        except Exception:
+                            pass
+                        try:
+                            cur = cur.parent()
+                        except Exception:
+                            break
+            except Exception:
+                pass
+
+        return results
+
     def _find_creator_cards(self) -> list:
         """
         在列表页查找 Creator 卡片/头像元素（多策略兜底）。
@@ -312,6 +388,7 @@ class ProposalSender:
         template_content: str | None = None,
         start_index: int = 1,
         skip_ready_prompt: bool = False,
+        send_mode: str = "strip",
     ) -> SendProposalsResult:
         """
         循环点击页面上所有的 Send Proposal 按钮
@@ -320,6 +397,8 @@ class ProposalSender:
             max_count: 最大发送数量
             template_content: 留言模板内容，None 时使用当前激活模板
             start_index: 起始序号（从 1 开始）。例如 3 表示跳过前 2 个可发送目标
+            send_mode: 发送方式，"card" = 卡片页面直接点按钮；"strip" = 条状列表，
+                点击卡片打开侧边栏后再点 Send Proposal 按钮
 
         Returns:
             SendProposalsResult(clicked_count, completed_all)。
@@ -426,8 +505,12 @@ class ProposalSender:
                     raise RuntimeError("浏览器重连失败") from err
 
             try:
-                # 查找当前可见的所有 Creator 卡片（需点击卡片打开侧边栏才能发送）
-                buttons = self._find_creator_cards()
+                # 查找当前可见的目标：卡片模式直接找 Send Proposal 按钮；
+                # 条状模式需点击卡片打开侧边栏才能发送
+                if send_mode == "card":
+                    buttons = self._find_send_proposal_buttons()
+                else:
+                    buttons = self._find_creator_cards()
 
                 if buttons is None:
                     consecutive_errors += 1
@@ -436,7 +519,7 @@ class ProposalSender:
                         time.sleep(1)
                     continue
 
-                # _find_creator_cards 已过滤为目标卡片，这里直接使用
+                # 查找方法已过滤为目标元素，这里直接使用
                 send_proposal_buttons = [b for b in (buttons or []) if b]
 
                 available_buttons = []
@@ -623,40 +706,48 @@ class ProposalSender:
                                             raise click_err
 
                                     if not clicked:
-                                        raise Exception("点击卡片失败")
-
-                                    # 卡片点击后需等待侧边栏内出现 Send Proposal 按钮
-                                    time.sleep(0.5)
-                                    send_btn = (
-                                        self._find_send_proposal_button_in_slideout(
-                                            timeout=10
+                                        raise Exception(
+                                            "点击按钮失败"
+                                            if send_mode == "card"
+                                            else "点击卡片失败"
                                         )
-                                    )
-                                    if not send_btn:
-                                        logger.warning(
-                                            "点击卡片后未找到 Send Proposal 按钮"
-                                        )
-                                        self.console.print(
-                                            "[yellow]⚠ 点击卡片后未找到 Send Proposal 按钮，跳过[/yellow]"
-                                        )
-                                        self._close_creator_slideout()
-                                        time.sleep(0.3)
-                                        break
 
-                                    send_parent = send_btn.parent()
-                                    if send_parent:
-                                        self.browser.scroll_to_element(send_parent)
-                                        time.sleep(0.2)
-                                    send_btn.click(by_js=True)
+                                    if send_mode == "card":
+                                        # 卡片模式：目标就是 Send Proposal 按钮，直接处理弹窗
+                                        time.sleep(0.5)
+                                    else:
+                                        # 条状模式：点击卡片后需等待侧边栏内出现 Send Proposal 按钮
+                                        time.sleep(0.5)
+                                        send_btn = (
+                                            self._find_send_proposal_button_in_slideout(
+                                                timeout=10
+                                            )
+                                        )
+                                        if not send_btn:
+                                            logger.warning(
+                                                "点击卡片后未找到 Send Proposal 按钮"
+                                            )
+                                            self.console.print(
+                                                "[yellow]⚠ 点击卡片后未找到 Send Proposal 按钮，跳过[/yellow]"
+                                            )
+                                            self._close_creator_slideout()
+                                            time.sleep(0.3)
+                                            break
 
-                                    # 处理弹窗，只有成功时才标记卡片和增加计数
-                                    time.sleep(0.5)
+                                        send_parent = send_btn.parent()
+                                        if send_parent:
+                                            self.browser.scroll_to_element(send_parent)
+                                            time.sleep(0.2)
+                                        send_btn.click(by_js=True)
+                                        time.sleep(0.5)
+
+                                    # 处理弹窗，只有成功时才标记目标并增加计数
                                     modal_success = self._handle_proposal_modal(
                                         selected_tab, template_content
                                     )
 
                                     if modal_success:
-                                        # 弹窗处理成功，增加计数并标记卡片
+                                        # 弹窗处理成功，增加计数并标记目标
                                         clicked_count += 1
                                         if self.dry_run:
                                             logger.info(
@@ -680,18 +771,19 @@ class ProposalSender:
                                         if pending_batch_buttons == 0:
                                             should_scroll_after_batch = True
                                     else:
-                                        # 弹窗处理失败，记录警告但不标记卡片
+                                        # 弹窗处理失败，记录警告但不标记目标
                                         logger.warning(
-                                            f"弹窗处理失败，跳过此卡片 (类别: {selected_tab})"
+                                            f"弹窗处理失败，跳过此目标 (类别: {selected_tab})"
                                         )
                                         self.console.print(
-                                            f"[yellow]⚠ 弹窗处理失败，跳过此卡片 (类别: {selected_tab})[/yellow]"
+                                            f"[yellow]⚠ 弹窗处理失败，跳过此目标 (类别: {selected_tab})[/yellow]"
                                         )
-                                        # 不增加计数，不标记卡片，继续处理下一个卡片
+                                        # 不增加计数，不标记目标，继续处理下一个
 
-                                    # 无论成功与否，关闭侧边栏准备下一个
-                                    self._close_creator_slideout()
-                                    time.sleep(0.3)
+                                    if send_mode != "card":
+                                        # 条状模式：无论成功与否，关闭侧边栏准备下一个
+                                        self._close_creator_slideout()
+                                        time.sleep(0.3)
 
                                     break
                                 except Exception as e:
