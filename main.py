@@ -388,6 +388,29 @@ class TemplateTermFetchWorker(QThread):
             self.fetch_done.emit([], str(exc))
 
 
+class ModalTermOptionsWorker(QThread):
+    """后台获取 Send Proposal 弹窗内的 Template Term 选项，避免阻塞确认对话框弹出。"""
+
+    options_ready = pyqtSignal(list)
+
+    def __init__(self, browser: BrowserManager, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+
+    def run(self) -> None:
+        try:
+            # 弹窗未打开时快速返回；已打开则后台解析选项
+            iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=0.5)
+            if not iframe:
+                return
+            from domain.template_term_utils import get_template_term_options
+
+            options = get_template_term_options(iframe, tab=self.browser.tab)
+            self.options_ready.emit(options)
+        except Exception:
+            pass
+
+
 class SettingsDialog(QDialog):
     _TRIPLE_CLICK_INTERVAL_MS = 500
 
@@ -623,32 +646,30 @@ class ProposalConfirmDialog(QDialog):
 
         layout.addWidget(tpl_group)
 
-        # Template Term 选择（如果有选项）
-        self.term_combo: QComboBox | None = None
+        # Template Term 设置（选项可后台异步获取后填充；默认隐藏）
+        self.current_term = current_term
+        self.term_group = QGroupBox("Template Term 设置")
+        term_layout = QVBoxLayout(self.term_group)
+
+        term_desc = QLabel("请选择 Template Term（可选）：")
+        term_desc.setStyleSheet("color: #64748b;")
+        term_layout.addWidget(term_desc)
+
+        self.term_combo = QComboBox()
+        self.term_combo.addItem("使用当前设置", userData=None)
+        term_layout.addWidget(self.term_combo)
+        layout.addWidget(self.term_group)
+
+        self.current_term_label: QLabel | None = None
+        if current_term:
+            self.current_term_label = QLabel(f"当前 Template Term: {current_term}")
+            self.current_term_label.setStyleSheet("color: #64748b; padding: 5px 0;")
+            layout.addWidget(self.current_term_label)
+
         if term_options:
-            term_group = QGroupBox("Template Term 设置")
-            term_layout = QVBoxLayout(term_group)
-
-            term_desc = QLabel("请选择 Template Term（可选）：")
-            term_desc.setStyleSheet("color: #64748b;")
-            term_layout.addWidget(term_desc)
-
-            self.term_combo = QComboBox()
-            self.term_combo.addItem("使用当前设置", userData=None)
-            for opt in term_options:
-                self.term_combo.addItem(opt, userData=opt)
-            # 尝试选中当前值
-            for i in range(self.term_combo.count()):
-                if self.term_combo.itemData(i) == current_term:
-                    self.term_combo.setCurrentIndex(i)
-                    break
-            term_layout.addWidget(self.term_combo)
-            layout.addWidget(term_group)
-
-        elif current_term:
-            term_label = QLabel(f"当前 Template Term: {current_term}")
-            term_label.setStyleSheet("color: #64748b; padding: 5px 0;")
-            layout.addWidget(term_label)
+            self._populate_term_options(term_options)
+        else:
+            self.term_group.setVisible(False)
 
         layout.addStretch()
 
@@ -699,6 +720,28 @@ class ProposalConfirmDialog(QDialog):
                 background-color: white;
             }
         """)
+
+    def _populate_term_options(self, options: list[str]) -> None:
+        """将选项填充到下拉框并展示 Term 设置区域。"""
+        options = [o for o in options if o and o.strip()]
+        if not options:
+            return
+        for opt in options:
+            self.term_combo.addItem(opt, userData=opt)
+        # 尝试选中当前 Template Term
+        for i in range(self.term_combo.count()):
+            if self.term_combo.itemData(i) == self.current_term:
+                self.term_combo.setCurrentIndex(i)
+                break
+        if self.current_term_label is not None:
+            self.current_term_label.setVisible(False)
+        self.term_group.setVisible(True)
+
+    def set_term_options(self, options: list[str]) -> None:
+        """后台线程获取到选项后回填（对话框已关闭则忽略）。"""
+        if not self.isVisible():
+            return
+        self._populate_term_options(options)
 
     def _on_confirm(self) -> None:
         """确认按钮点击处理"""
@@ -1127,6 +1170,7 @@ class MainWindow(QMainWindow):
         self._lock_widgets: list = []
         self._syncing_template_term_ui = False
         self._term_fetch_worker: TemplateTermFetchWorker | None = None
+        self._dialog_term_options_worker: ModalTermOptionsWorker | None = None
         self._fetch_progress_dialog: QDialog | None = None
         self._active_template_name = "未配置"
         self._active_template_content = ""
@@ -2036,21 +2080,7 @@ class MainWindow(QMainWindow):
         settings = self.settings_service.get_snapshot()
         current_term = settings.template_term
 
-        # 获取 Template Term 选项（需要浏览器连接）
-        term_options: list[str] = []
-        if self.browser and self.browser.is_connected() and self.browser.tab:
-            try:
-                iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=3)
-                if iframe:
-                    from domain.template_term_utils import get_template_term_options
-
-                    term_options = get_template_term_options(
-                        iframe, tab=self.browser.tab
-                    )
-            except Exception:
-                pass
-
-        # 显示确认对话框
+        # 显示确认对话框（Term 选项通过后台线程获取，不阻塞弹窗弹出）
         dialog = ProposalConfirmDialog(
             mode=mode,
             max_count=max_count,
@@ -2058,9 +2088,16 @@ class MainWindow(QMainWindow):
             template_name=template_name,
             template_content=template_content,
             current_term=current_term,
-            term_options=term_options if term_options else None,
+            term_options=None,
             parent=self,
         )
+
+        if self.browser and self.browser.is_connected() and self.browser.tab:
+            worker = ModalTermOptionsWorker(self.browser)
+            worker.options_ready.connect(dialog.set_term_options)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+            self._dialog_term_options_worker = worker
 
         return dialog
 
@@ -2080,7 +2117,7 @@ class MainWindow(QMainWindow):
 
         term_options: list[str] = []
         try:
-            iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=3)
+            iframe = self.browser.find_element(MODAL_IFRAME_SELECTOR, timeout=1)
             if iframe:
                 from domain.template_term_utils import get_template_term_options
 
