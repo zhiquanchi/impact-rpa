@@ -1182,41 +1182,34 @@ class ProposalSender:
         )
 
     def _find_send_proposal_button_in_slideout(self, timeout: int = 10):
-        """在侧边栏内查找 Send Proposal 按钮，限定范围避免匹配到页面其他按钮。
+        """查找 Send Proposal 按钮。
+
+        实测确认（Chrome DevTools MCP）：Creator 详情侧边栏内容渲染在
+        #unified-program-slideout 的 Shadow DOM 内，且全站仅此 1 个匹配
+        （普通 DOM 无），因此只保留 shadow root 查找路径。
 
         Returns:
             找到且文本包含 "Send Proposal" 的按钮元素，未找到返回 None。
         """
         try:
-            slideout = self.browser.find_element(
-                'css:[class*="slideout"], [class*="detail"], [class*="panel"]',
-                timeout=2,
-            )
-            if not slideout:
-                logger.debug("未找到侧边栏容器")
+            host = self.browser.find_element('#unified-program-slideout', timeout=2)
+            if not host:
+                logger.debug("未找到侧边栏容器 #unified-program-slideout")
                 return None
-
-            # 优先用文本精准匹配
-            send_btn = slideout.ele("text:Send Proposal", timeout=min(timeout, 3))
+            try:
+                shadow = host.sr
+            except Exception:
+                shadow = None
+            if not shadow:
+                logger.debug("侧边栏容器无 shadow root")
+                return None
+            send_btn = shadow.ele('text:Send Proposal', timeout=min(timeout, 3))
             if send_btn and "Send Proposal" in (send_btn.text or ""):
                 return send_btn
-
-            # 兜底：枚举侧边栏内所有 uicl-button，按文本过滤
-            # buttons_list = slideout.eles(
-            #     'css:button[data-testid="uicl-button"]',
-            #     timeout=min(timeout, 2),
-            # )
-            # for b in buttons_list or []:
-            #     if not b:
-            #         continue
-            #     if "Send Proposal" in (b.text or ""):
-            #         return b
-
-            # logger.debug("侧边栏内未找到含 'Send Proposal' 的按钮")
-            # return None
         except Exception as e:
             logger.debug(f"查找 Send Proposal 按钮失败: {e}")
             return None
+        return None
 
     def _close_creator_slideout(self):
         """关闭 Creator 详情侧边栏"""
