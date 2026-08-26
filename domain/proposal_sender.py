@@ -627,22 +627,11 @@ class ProposalSender:
 
                                     # 卡片点击后需等待侧边栏内出现 Send Proposal 按钮
                                     time.sleep(0.5)
-                                    send_btn = self.browser.find_element(
-                                        "text:Send Proposal", timeout=10
-                                    )
-                                    if not send_btn:
-                                        buttons_list = self.browser.find_elements(
-                                            'css:button[data-testid="uicl-button"]',
-                                            timeout=2,
+                                    send_btn = (
+                                        self._find_send_proposal_button_in_slideout(
+                                            timeout=10
                                         )
-                                        for b in buttons_list or []:
-                                            if not b:
-                                                continue
-                                            if "Send Proposal" in (
-                                                b.text or ""
-                                            ):
-                                                send_btn = b
-                                                break
+                                    )
                                     if not send_btn:
                                         logger.warning(
                                             "点击卡片后未找到 Send Proposal 按钮"
@@ -884,18 +873,8 @@ class ProposalSender:
                 logger.info(f"第 {row_index} 行 [{creator_name}] 已发送过，跳过")
                 return False, creator_name, psi_id, True  # 跳过
 
-            # 点击行后出现的 Send Proposal 按钮：优先按文本查找并点击
-            send_btn = self.browser.find_element("text:Send Proposal", timeout=10)
-            if not send_btn:
-                buttons = self.browser.find_elements(
-                    'css:button[data-testid="uicl-button"]'
-                )
-                for btn in buttons or []:
-                    if not btn:
-                        continue
-                    if "Send Proposal" in (btn.text or ""):
-                        send_btn = btn
-                        break
+            # 点击行后出现的 Send Proposal 按钮：在侧边栏内查找
+            send_btn = self._find_send_proposal_button_in_slideout(timeout=10)
             if not send_btn:
                 logger.warning("点击行后未找到 Send Proposal 按钮")
                 self.console.print("[red]点击行后未找到 Send Proposal 按钮[/red]")
@@ -1201,6 +1180,43 @@ class ProposalSender:
             clicked_count=sent_count,
             completed_all=(sent_count >= max_count),
         )
+
+    def _find_send_proposal_button_in_slideout(self, timeout: int = 10):
+        """在侧边栏内查找 Send Proposal 按钮，限定范围避免匹配到页面其他按钮。
+
+        Returns:
+            找到且文本包含 "Send Proposal" 的按钮元素，未找到返回 None。
+        """
+        try:
+            slideout = self.browser.find_element(
+                'css:[class*="slideout"], [class*="detail"], [class*="panel"]',
+                timeout=2,
+            )
+            if not slideout:
+                logger.debug("未找到侧边栏容器")
+                return None
+
+            # 优先用文本精准匹配
+            send_btn = slideout.ele("text:Send Proposal", timeout=min(timeout, 3))
+            if send_btn and "Send Proposal" in (send_btn.text or ""):
+                return send_btn
+
+            # 兜底：枚举侧边栏内所有 uicl-button，按文本过滤
+            # buttons_list = slideout.eles(
+            #     'css:button[data-testid="uicl-button"]',
+            #     timeout=min(timeout, 2),
+            # )
+            # for b in buttons_list or []:
+            #     if not b:
+            #         continue
+            #     if "Send Proposal" in (b.text or ""):
+            #         return b
+
+            # logger.debug("侧边栏内未找到含 'Send Proposal' 的按钮")
+            # return None
+        except Exception as e:
+            logger.debug(f"查找 Send Proposal 按钮失败: {e}")
+            return None
 
     def _close_creator_slideout(self):
         """关闭 Creator 详情侧边栏"""
