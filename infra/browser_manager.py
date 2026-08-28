@@ -312,10 +312,13 @@ class BrowserManager:
         """
         try:
             # 优先尝试使用 JavaScript 智能滚动（参考 gundongchajian 插件）
+            # 参数通过 run_js(*args) 传入，在脚本内用 arguments[0]/arguments[1] 读取
             js_result = self.tab.run_js("""
-                (function(pixels, incremental) {
-                    // 查找可滚动的容器元素
-                    function findScrollContainers() {
+                const pixels = arguments[0];
+                const incremental = arguments[1];
+
+                // 查找可滚动的容器元素
+                function findScrollContainers() {
                         const containers = [];
                         const allElements = document.querySelectorAll('*');
 
@@ -417,8 +420,7 @@ class BrowserManager:
                         success: scrolled,
                         container: containerInfo
                     };
-                })(${pixels}, ${incremental})
-            """)
+            """, pixels, incremental)
 
             # 处理 JavaScript 返回的结果
             if js_result and isinstance(js_result, dict):
