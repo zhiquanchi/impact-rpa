@@ -17,6 +17,10 @@ from domain.template_term_utils import get_template_term_options
 from domain.wait_utils import wait_until
 from exception_handler import exception_handler
 
+# 卡片上常驻显示的绿色对勾容器（.hover-action.always-show）表示该 Creator 已被邀请过，
+# 批量发送时需跳过；待邀请卡片的对勾外层是 .hover-action.performable-action（hover 才出现）。
+GREEN_CHECK_SELECTOR = "css:.hover-action.always-show"
+
 
 @dataclass(frozen=True)
 class SendProposalsResult:
@@ -248,14 +252,46 @@ class ProposalSender:
         except Exception:
             pass
 
+    def _find_card_container(self, ele):
+        """从任意元素向上查找其所属卡片容器（.iui-card / .discovery-card）。"""
+        cur = ele
+        for _ in range(12):
+            if not cur:
+                return None
+            try:
+                cls = (cur.attr("class") or "").lower()
+                if "iui-card" in cls or "discovery-card" in cls:
+                    return cur
+                cur = cur.parent()
+            except Exception:
+                return None
+        return None
+
+    def _card_has_green_check(self, ele) -> bool:
+        """判断元素所属卡片是否带常驻绿色对勾（已邀请过，需跳过）。
+
+        已邀请卡片：对勾外层为 .hover-action.always-show.add-action，无需 hover 常驻显示；
+        待邀请卡片：对勾外层为 .hover-action.performable-action，hover 后才出现。
+        无法定位卡片容器时返回 False，避免误跳过（宁可多试一次也不漏发）。
+        """
+        card = self._find_card_container(ele)
+        if card is None:
+            return False
+        try:
+            return bool(card.ele(GREEN_CHECK_SELECTOR, timeout=0.1))
+        except Exception:
+            return False
+
     def _find_send_proposal_buttons(self) -> list:
         """
         在列表页查找可点击的 Send Proposal 按钮（多策略兜底，卡片模式）。
 
         说明：Impact 的 DOM/测试 id 可能变动，单一 selector 容易导致一直"找不到按钮 → 滚动"。
+        已邀请（卡片带常驻绿色对勾）的 Creator 会被过滤掉。
         """
         results: list = []
         seen: set[int] = set()
+        skipped_invited = 0
 
         def _add(ele) -> None:
             if not ele:
@@ -274,6 +310,9 @@ class ProposalSender:
             for b in btns or []:
                 try:
                     if "Send Proposal" in ((b.text or "").strip()):
+                        if self._card_has_green_check(b):
+                            skipped_invited += 1
+                            continue
                         _add(b)
                 except Exception:
                     continue
@@ -287,6 +326,9 @@ class ProposalSender:
                 for b in btns or []:
                     try:
                         if "Send Proposal" in ((b.text or "").strip()):
+                            if self._card_has_green_check(b):
+                                skipped_invited += 1
+                                continue
                             _add(b)
                     except Exception:
                         continue
@@ -305,13 +347,19 @@ class ProposalSender:
                         try:
                             tag = getattr(cur, "tag", None)
                             if isinstance(tag, str) and tag.lower() == "button":
-                                _add(cur)
+                                if not self._card_has_green_check(cur):
+                                    _add(cur)
+                                else:
+                                    skipped_invited += 1
                                 break
                         except Exception:
                             pass
                         try:
                             if (cur.attr("role") or "").strip().lower() == "button":
-                                _add(cur)
+                                if not self._card_has_green_check(cur):
+                                    _add(cur)
+                                else:
+                                    skipped_invited += 1
                                 break
                         except Exception:
                             pass
@@ -322,6 +370,11 @@ class ProposalSender:
             except Exception:
                 pass
 
+        if skipped_invited:
+            logger.info(
+                f"已跳过 {skipped_invited} 个带绿色对勾（已邀请）的 Creator 卡片"
+            )
+
         return results
 
     def _find_creator_cards(self) -> list:
@@ -330,9 +383,11 @@ class ProposalSender:
 
         新版 Impact 列表页不再直接暴露 Send Proposal 按钮，需要先点击卡片/头像打开侧边栏，
         在侧边栏内才会出现 Send Proposal 按钮。
+        已邀请（卡片带常驻绿色对勾）的 Creator 会被过滤掉。
         """
         results: list = []
         seen: set[int] = set()
+        skipped_invited = 0
 
         def _add(ele) -> None:
             if not ele:
@@ -349,6 +404,9 @@ class ProposalSender:
                 "css:.iui-card .creator-card", timeout=1.5
             )
             for c in cards or []:
+                if self._card_has_green_check(c):
+                    skipped_invited += 1
+                    continue
                 _add(c)
         except Exception:
             pass
@@ -361,6 +419,9 @@ class ProposalSender:
                 )
                 for a in avatars or []:
                     try:
+                        if self._card_has_green_check(a):
+                            skipped_invited += 1
+                            continue
                         card = a.parent()
                         if card:
                             _add(card)
@@ -376,9 +437,17 @@ class ProposalSender:
                     "css:div.table-body > div", timeout=1.5
                 )
                 for r in rows or []:
+                    if self._card_has_green_check(r):
+                        skipped_invited += 1
+                        continue
                     _add(r)
             except Exception:
                 pass
+
+        if skipped_invited:
+            logger.info(
+                f"已跳过 {skipped_invited} 个带绿色对勾（已邀请）的 Creator 卡片"
+            )
 
         return results
 
