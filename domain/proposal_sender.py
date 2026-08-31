@@ -10,6 +10,10 @@ from rich.panel import Panel
 
 from core.settings_models import AppSettings, PartnerGroupsSettings
 from domain.date_picker import DatePicker
+from domain.partner_category_listener import (
+    PartnerCategoryListener,
+    find_card_container,
+)
 from domain.proposal_modal_service import ProposalModalService
 from domain.selectors import MODAL_IFRAME_SELECTOR
 from domain.template_term_selector import TemplateTermSelector
@@ -60,6 +64,8 @@ class ProposalSender:
         self.date_picker = DatePicker(console)
         # 初始化 Template Term 选择器
         self.template_term_selector = TemplateTermSelector(config)
+        # 初始化分类监听器（监听列表接口，维护列表分类与 Partner 自身分类映射）
+        self.category_listener = PartnerCategoryListener(self.browser)
 
         # 订阅配置热更新（如果启用）
         try:
@@ -252,21 +258,6 @@ class ProposalSender:
         except Exception:
             pass
 
-    def _find_card_container(self, ele):
-        """从任意元素向上查找其所属卡片容器（.iui-card / .discovery-card）。"""
-        cur = ele
-        for _ in range(12):
-            if not cur:
-                return None
-            try:
-                cls = (cur.attr("class") or "").lower()
-                if "iui-card" in cls or "discovery-card" in cls:
-                    return cur
-                cur = cur.parent()
-            except Exception:
-                return None
-        return None
-
     def _card_has_green_check(self, ele) -> bool:
         """判断元素所属卡片是否带常驻绿色对勾（已邀请过，需跳过）。
 
@@ -274,7 +265,7 @@ class ProposalSender:
         待邀请卡片：对勾外层为 .hover-action.performable-action，hover 后才出现。
         无法定位卡片容器时返回 False，避免误跳过（宁可多试一次也不漏发）。
         """
-        card = self._find_card_container(ele)
+        card = find_card_container(ele)
         if card is None:
             return False
         try:
@@ -543,6 +534,9 @@ class ProposalSender:
         # 重置滚动进度追踪
         self._reset_scroll_progress()
 
+        # 监听列表接口，滚动加载时自动捕获当前分类（businessModels）
+        self.category_listener.start()
+
         # 循环条件：未达到目标数量 且 未超过最大滚动次数（安全限制）
         while clicked_count < max_count and total_scrolls < effective_max_scrolls:
             if self._stop_requested:
@@ -551,6 +545,8 @@ class ProposalSender:
                     f"发送任务被请求停止，已发送 {clicked_count}/{max_count} 个"
                 )
                 break
+            # 消费列表接口监听数据，更新当前分类
+            self.category_listener.drain()
             # 检查是否需要重连
             if consecutive_errors >= self.max_consecutive_errors:
                 self.console.print(
@@ -571,6 +567,7 @@ class ProposalSender:
                         send_notification=False,
                     )
                     self.console.print("[red]重连失败，停止执行[/red]")
+                    self.category_listener.stop()
                     raise RuntimeError("浏览器重连失败") from err
 
             try:
@@ -704,6 +701,7 @@ class ProposalSender:
                         logger.info(
                             f"发送任务在批次内被请求停止，已发送 {clicked_count}/{max_count} 个"
                         )
+                        self.category_listener.stop()
                         return SendProposalsResult(
                             clicked_count=clicked_count,
                             completed_all=False,
@@ -716,6 +714,7 @@ class ProposalSender:
                         self.console.print(
                             f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]"
                         )
+                        self.category_listener.stop()
                         return SendProposalsResult(
                             clicked_count=clicked_count, completed_all=True
                         )
@@ -743,6 +742,11 @@ class ProposalSender:
 
                     try:
                         selected_tab = self._get_selected_tab_value(btn)
+                        # All Partners 混合列表下，改用该 Partner 自身分类（来自
+                        # 列表响应 businessModel.dv）填 Partner Group；其他 tab 不变
+                        selected_tab = self.category_listener.resolve_partner_group_value(
+                            btn, selected_tab
+                        )
 
                         parent = btn.parent()
                         for retry_idx in range(10):
@@ -969,6 +973,7 @@ class ProposalSender:
         self.console.print(
             f"\n[bold cyan]===== 完成！共发送了 {clicked_count} 个 Send Proposal =====[/bold cyan]"
         )
+        self.category_listener.stop()
         return SendProposalsResult(
             clicked_count=clicked_count,
             completed_all=(clicked_count >= max_count),
@@ -1447,7 +1452,28 @@ class ProposalSender:
         return sent_names
 
     def _get_selected_tab_value(self, btn) -> str | None:
-        """获取按钮所在行的 selected-tab 值"""
+        """获取当前列表页的分类（选中的筛选 tab）。
+
+        优先使用列表接口监听捕获的 businessModels 映射值（随滚动加载自动更新），
+        其次读页面 DOM 的筛选 tab 栏（.iui-button-tabs.filter-tabs .iui-tab-item.selected），
+        最后回退旧版 .selected-tab 元素。
+        该值同时用于匹配 Partner Group 名称，取不到会导致 partner group 环节被跳过。
+        """
+        # 策略1：listener 捕获的列表接口分类参数
+        if self.category_listener.list_category:
+            return self.category_listener.list_category
+
+        # 策略2：新版筛选 tab 栏（页面级元素，与按钮位置无关）
+        try:
+            tab_ele = self.browser.find_element(
+                "css:.iui-button-tabs.filter-tabs .iui-tab-item.selected", timeout=0.5
+            )
+            if tab_ele and (tab_ele.text or "").strip():
+                return (tab_ele.text or "").strip()
+        except Exception:
+            pass
+
+        # 策略3：旧版 — 按钮所在行向上找 .selected-tab
         try:
             parent = btn.parent()
             for _ in range(20):
