@@ -304,241 +304,40 @@ class BrowserManager:
             return False
 
     def scroll_down(self, pixels: int = 500, incremental: bool = True) -> bool:
-        """向下滚动页面（增强版：支持智能容器检测和渐进式滚动）
+        """向下滚动页面（使用 DrissionPage PageScroller）
 
         Args:
             pixels: 滚动像素数
             incremental: True=渐进式滚动（推荐），False=滚动到底部
         """
         try:
-            # 优先尝试使用 JavaScript 智能滚动（参考 gundongchajian 插件）
-            # 参数通过 run_js(*args) 传入，在脚本内用 arguments[0]/arguments[1] 读取
-            js_result = self.tab.run_js("""
-                const pixels = arguments[0];
-                const incremental = arguments[1];
-
-                // 查找可滚动的容器元素
-                function findScrollContainers() {
-                        const containers = [];
-                        const allElements = document.querySelectorAll('*');
-
-                        for (const el of allElements) {
-                            const style = window.getComputedStyle(el);
-                            const overflowY = style.overflowY;
-                            const overflow = style.overflow;
-
-                            // 检查是否是可滚动容器
-                            if ((overflowY === 'auto' || overflowY === 'scroll' ||
-                                 overflow === 'auto' || overflow === 'scroll') &&
-                                el.scrollHeight > el.clientHeight) {
-                                // 排除 html/body，这些是页面级别的
-                                if (el.tagName.toLowerCase() !== 'html' &&
-                                    el.tagName.toLowerCase() !== 'body') {
-                                    containers.push({
-                                        element: el,
-                                        scrollTop: el.scrollTop,
-                                        scrollHeight: el.scrollHeight,
-                                        clientHeight: el.clientHeight,
-                                        tagName: el.tagName,
-                                        className: el.className,
-                                        id: el.id
-                                    });
-                                }
-                            }
-                        }
-
-                        // 按可滚动高度排序，优先选择内容最多的容器
-                        containers.sort((a, b) =>
-                            (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
-                        );
-
-                        return containers;
-                    }
-
-                    const containers = findScrollContainers();
-                    let scrolled = false;
-                    let containerInfo = null;
-
-                    if (containers.length > 0) {
-                        // 选择第一个（最大的）滚动容器
-                        const container = containers[0].element;
-                        const prevScrollTop = container.scrollTop;
-
-                        if (incremental) {
-                            // 渐进式滚动：滚动指定像素
-                            const step = Math.max(pixels, Math.floor(container.clientHeight * 0.85));
-                            container.scrollTop = prevScrollTop + step;
-                        } else {
-                            // 滚动到底部
-                            container.scrollTop = container.scrollHeight;
-                        }
-
-                        const actualScrolled = Math.abs(container.scrollTop - prevScrollTop);
-                        scrolled = actualScrolled > 1;
-
-                        containerInfo = {
-                            containerFound: true,
-                            containerTag: container.tagName.toLowerCase(),
-                            containerId: container.id || '',
-                            containerClass: (container.className || '').toString().slice(0, 50),
-                            prevScrollTop: prevScrollTop,
-                            newScrollTop: container.scrollTop,
-                            actualScrolled: actualScrolled,
-                            scrollHeight: container.scrollHeight,
-                            clientHeight: container.clientHeight
-                        };
-                    } else {
-                        // 没有找到内部滚动容器，回退到 window 滚动
-                        const beforeY = window.scrollY || window.pageYOffset;
-
-                        if (incremental) {
-                            window.scrollBy({
-                                top: Math.max(pixels, Math.floor(window.innerHeight * 0.85)),
-                                left: 0,
-                                behavior: 'smooth'
-                            });
-                        } else {
-                            window.scrollTo({
-                                top: document.body.scrollHeight,
-                                behavior: 'smooth'
-                            });
-                        }
-
-                        const afterY = window.scrollY || window.pageYOffset;
-                        const actualScrolled = Math.abs(afterY - beforeY);
-                        scrolled = actualScrolled > 1;
-
-                        containerInfo = {
-                            containerFound: false,
-                            prevScrollTop: beforeY,
-                            newScrollTop: afterY,
-                            actualScrolled: actualScrolled
-                        };
-                    }
-
-                    return {
-                        success: scrolled,
-                        container: containerInfo
-                    };
-            """, pixels, incremental)
-
-            # 处理 JavaScript 返回的结果
-            if js_result and isinstance(js_result, dict):
-                success = js_result.get('success', False)
-                container_info = js_result.get('container', {})
-
-                if container_info:
-                    container_found = container_info.get('containerFound', False)
-                    actual_scrolled = container_info.get('actualScrolled', 0)
-
-                    if container_found:
-                        container_tag = container_info.get('containerTag', 'unknown')
-                        container_id = container_info.get('containerId', '')
-                        logger.debug(
-                            f"智能滚动成功，容器: {container_tag}"
-                            f"{'#' + container_id if container_id else ''}, "
-                            f"实际滚动: {actual_scrolled:.0f}px"
-                        )
-                    else:
-                        logger.debug(f"使用 window 滚动，实际滚动: {actual_scrolled:.0f}px")
-
-                return success
+            if incremental:
+                self.tab.scroll.down(pixels)
+                logger.debug(f"页面已向下滚动 {pixels}px")
             else:
-                logger.warning("JavaScript 滚动返回结果异常")
-                return False
+                self.tab.scroll.to_bottom()
+                logger.debug("页面已滚动到底部")
+            return True
 
         except Exception as e:
-            logger.warning(f"智能滚动失败，回退到传统方式: {e}")
-            # 回退到传统的 DrissionPage scroll 方法
-            try:
-                self.tab.scroll.down(pixels)
-                return True
-            except Exception as fallback_err:
-                logger.error(f"传统滚动也失败: {fallback_err}")
-                shot = self._capture_screenshot(f"scroll_down_{pixels}")
-                exception_handler.log_exception(
-                    fallback_err,
-                    context={
-                        "operation": "向下滚动",
-                        "pixels": pixels,
-                        "page": self._get_page_context(),
-                        "caller": self._caller_brief(),
-                        "screenshot": shot,
-                    },
-                )
-                return False
+            logger.warning(f"向下滚动失败: {e}")
+            shot = self._capture_screenshot(f"scroll_down_{pixels}")
+            exception_handler.log_exception(
+                e,
+                context={
+                    "operation": "向下滚动",
+                    "pixels": pixels,
+                    "page": self._get_page_context(),
+                    "caller": self._caller_brief(),
+                    "screenshot": shot,
+                },
+            )
+            return False
 
     def scroll_to_element(self, element) -> bool:
-        """滚动到元素可见（增强版：支持智能容器检测）"""
+        """滚动到元素可见（使用 DrissionPage ElementScroller，居中显示）"""
         try:
-            # 尝试使用 JavaScript 智能滚动到元素
-            self.tab.run_js("""
-                (function() {
-                    // 查找元素
-                    const target = arguments[0];
-                    if (!target || !target.scrollIntoView) {
-                        return { success: false, reason: 'element_not_found' };
-                    }
-
-                    // 查找滚动容器
-                    function findScrollContainer(el) {
-                        let current = el;
-                        let guard = 0;
-                        while (current && guard < 40) {
-                            const parent = current.parentElement ||
-                                          (current.getRootNode && current.getRootNode().host);
-                            if (!parent) break;
-
-                            const style = window.getComputedStyle(parent);
-                            const overflowY = style.overflowY;
-                            const overflow = style.overflow;
-
-                            if (/(auto|scroll)/.test(overflowY + overflow)) {
-                                return {
-                                    element: parent,
-                                    scrollTop: parent.scrollTop,
-                                    scrollHeight: parent.scrollHeight,
-                                    clientHeight: parent.clientHeight,
-                                    tagName: parent.tagName,
-                                    id: parent.id,
-                                    className: parent.className
-                                };
-                            }
-
-                            current = parent;
-                            guard++;
-                        }
-                        return null;
-                    }
-
-                    const container = findScrollContainer(target);
-
-                    if (container) {
-                        // 滚动容器
-                        const prevScrollTop = container.element.scrollTop;
-                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        const actualScrolled = Math.abs(container.element.scrollTop - prevScrollTop);
-
-                        return {
-                            success: true,
-                            method: 'container_scroll',
-                            container: {
-                                tagName: container.element.tagName.toLowerCase(),
-                                id: container.element.id || '',
-                                actualScrolled: actualScrolled
-                            }
-                        };
-                    } else {
-                        // 回退到默认的 scrollIntoView
-                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        return {
-                            success: true,
-                            method: 'default_scroll_into_view'
-                        };
-                    }
-                })(arguments[0])
-            """, element)
-
+            element.scroll.to_see(center=True)
             return True
         except Exception as e:
             logger.warning(f"滚动到元素失败: {e}")

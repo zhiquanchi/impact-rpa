@@ -2120,7 +2120,7 @@ class ProposalSender:
 
         def _scroll_into_view(ele) -> None:
             try:
-                ele.run_js('this.scrollIntoView({block:"center", inline:"nearest"});')
+                ele.scroll.to_see(center=True)
             except Exception:
                 pass
 

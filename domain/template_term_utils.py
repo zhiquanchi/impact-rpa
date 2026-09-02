@@ -223,7 +223,7 @@ def _click_element(ele) -> bool:
     if not ele:
         return False
     try:
-        ele.run_js('this.scrollIntoView({block:"center", inline:"nearest"});')
+        ele.scroll.to_see(center=True)
     except Exception:
         pass
     try:
