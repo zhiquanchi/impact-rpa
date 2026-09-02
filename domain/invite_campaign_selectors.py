@@ -38,6 +38,24 @@ MESSAGE_TEXTAREA_SELECTORS = [
     "tag:textarea",
 ]
 
+# Partner Groups tag 输入框（与 Send Proposal 弹窗同款 uicl 组件）
+PARTNER_GROUP_INPUT_SELECTORS = [
+    'css:input[data-testid="uicl-tag-input-text-input"]',
+    'css:[data-testid="uicl-tag-input"] input',
+    "css:.iui-tag-input input",
+]
+
+# Partner Groups 下拉浮层（新版独立浮层 / tag-input 容器内两种布局）
+PARTNER_GROUP_DROPDOWN_SELECTORS = [
+    'css:[data-testid="uicl-tag-input-dropdown"]',
+]
+
+PARTNER_GROUP_OPTION_SELECTORS = [
+    'css:li[role="option"]',
+    'css:div[role="option"]',
+    "css:li",
+]
+
 # Send Invite 按钮
 SEND_INVITE_BUTTON_SELECTORS = [
     "text:Send Invite",

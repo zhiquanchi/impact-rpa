@@ -1,5 +1,6 @@
 """Invite to Campaign 服务 - 负责 hover 显示按钮、打开弹窗、选择 campaign、发送邀请并监听结果。"""
 
+import re
 import time
 
 from DrissionPage.errors import NoRectError
@@ -15,7 +16,14 @@ from domain.invite_campaign_selectors import (
     INVITE_BUTTON_SELECTORS,
     MESSAGE_TEXTAREA_SELECTORS,
     MODAL_SELECTORS,
+    PARTNER_GROUP_DROPDOWN_SELECTORS,
+    PARTNER_GROUP_INPUT_SELECTORS,
+    PARTNER_GROUP_OPTION_SELECTORS,
     SEND_INVITE_BUTTON_SELECTORS,
+)
+from domain.partner_category_listener import (
+    CATEGORY_MORE_TRIGGER_XPATH,
+    PartnerCategoryListener,
 )
 
 HOVER_WAIT = 1.0
@@ -23,17 +31,53 @@ MODAL_WAIT = 2.0
 DROPDOWN_WAIT = 1.5
 LISTENER_TIMEOUT = 15
 
+ALL_PARTNERS_TEXT = "all partners"
+
+
+def _normalize_group_text(text: str) -> str:
+    """规范化 Partner Group 文本用于匹配（去计数后缀、去空白、忽略大小写）。"""
+    raw = re.sub(r"\s*\(\d+\)\s*$", "", text or "")
+    return re.sub(r"\s+", "", raw).strip().lower()
+
 
 class InviteCampaignService:
     """邀请到 Campaign 的服务类。
 
     使用方式：
         service = InviteCampaignService(browser_manager)
+        service.start_batch()               # 批任务开始：启动分类监听、清空缓存
         result = service.invite(campaign_name="TORRAS Japan")
+        service.stop_batch()                # 批任务结束
     """
 
     def __init__(self, browser):
         self.browser = browser
+        # 分类映射缓存（config/category_mapping.json，GUI 手动刷新）
+        from domain.category_mapping_store import mapping_path
+
+        config_dir = getattr(getattr(browser, "config", None), "config_dir", None)
+        self.category_listener = PartnerCategoryListener(
+            browser, mapping_file=mapping_path(config_dir) if config_dir else None
+        )
+        # 批内缓存：具体 tab 分类与兜底元素文本（整批相同，各解析一次复用）
+        self._list_category_cache: str | None = None
+        self._list_category_resolved = False
+        self._source_text_cache: str | None = None
+
+    # ------------------------------------------------------------------
+    # 批任务生命周期
+    # ------------------------------------------------------------------
+    def start_batch(self) -> None:
+        """批任务开始：启动列表接口监听，无数据时刷新页面捕获，重置缓存。"""
+        self._list_category_cache = None
+        self._list_category_resolved = False
+        self._source_text_cache = None
+        self.category_listener.start()
+        self.category_listener.ensure_list_category()
+
+    def stop_batch(self) -> None:
+        """批任务结束：停止监听。"""
+        self.category_listener.stop()
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -65,6 +109,10 @@ class InviteCampaignService:
 
             logger.info("Invite to Campaign 按钮已显示")
 
+            # 1.5 解析 Partner Groups 分类：须在弹窗打开前完成 ——
+            #     DOM 兜底要点击页面分类下拉，弹窗打开后会被遮罩挡住
+            partner_group = self._resolve_partner_group(card)
+
             # 2. 点击按钮打开弹窗
             if not self._click_invite_button(card):
                 return InviteCampaignResult(success=False, message="点击按钮失败")
@@ -82,11 +130,18 @@ class InviteCampaignService:
 
             logger.info(f"已选中 campaign: {campaign_name}")
 
-            # 5. 填写个性化消息
+            # 5. 填入 Partner Groups：
+            #    - 具体 tab（Creators 等）：监听捕获的 businessModels 分类，批内缓存复用；
+            #    - All Partners：混合列表，逐卡片用监听捕获的该 Partner 自身分类；
+            #    - 监听完全无数据：点击分类下拉读取选中项兜底（批内缓存）。
+            if partner_group:
+                self._fill_partner_group(modal, partner_group)
+
+            # 6. 填写个性化消息
             if message:
                 self._fill_message(modal, message)
 
-            # 6. 发送邀请并监听响应
+            # 7. 发送邀请并监听响应
             return self._send_and_listen(modal)
 
         except Exception as e:
@@ -96,6 +151,174 @@ class InviteCampaignService:
                 raise
             logger.error(f"邀请操作失败: {e}")
             return InviteCampaignResult(success=False, message=str(e))
+
+    # ------------------------------------------------------------------
+    # Partner Groups
+    # ------------------------------------------------------------------
+    def _resolve_partner_group(self, card) -> str | None:
+        """解析这张卡片要填入的 Partner Groups 分类（监听优先，元素文本兜底）。
+
+        - 具体 tab：businessModels 整批相同，批内解析一次并缓存复用；
+        - All Partners（或监听无 tab 分类）：每个 Partner 用监听捕获的自身分类
+          （列表响应 records[].businessModel.dv），逐卡片解析不缓存；
+        - 监听完全无数据：取分类显示元素（PARTNER_GROUP_SOURCE_XPATH）文本，
+          批内解析一次缓存复用。
+        """
+        category = self._get_list_category()
+        if category and category.strip().lower() != ALL_PARTNERS_TEXT:
+            return category
+
+        if category is not None:
+            # All Partners：逐卡片用监听捕获的自身分类
+            try:
+                self.category_listener.drain()
+            except Exception as e:
+                logger.debug(f"消费分类监听数据失败: {e}")
+
+            name = PartnerCategoryListener.get_partner_name(card)
+            if not name:
+                logger.debug("未能从卡片提取 Partner 名称，跳过 Partner Groups 填写")
+                return None
+            own = self.category_listener.partner_business_model(name)
+            if own:
+                logger.info(
+                    f"All Partners 列表下 [{name}] 自身分类: {own}（用于 Partner Groups）"
+                )
+                return own
+            logger.info(
+                f"All Partners 列表下 [{name}] 未监听到自身分类，跳过 Partner Groups 填写"
+            )
+            return None
+
+        # 监听完全无数据：分类显示元素文本兜底
+        return self._read_partner_group_source_text()
+
+    def _get_list_category(self) -> str | None:
+        """获取监听捕获的列表分类（businessModels 映射值），批内缓存。"""
+        if self._list_category_resolved:
+            return self._list_category_cache
+        self._list_category_resolved = True
+        self._list_category_cache = None
+
+        try:
+            self.category_listener.drain()
+        except Exception as e:
+            logger.debug(f"消费分类监听数据失败: {e}")
+
+        category = self.category_listener.list_category
+        if category:
+            self._list_category_cache = category.strip()
+            logger.info(f"本批次列表分类（监听）: {self._list_category_cache}")
+        return self._list_category_cache
+
+    def _read_partner_group_source_text(self) -> str | None:
+        """监听无数据时的兜底：点击分类下拉读取选中项（批内缓存）。"""
+        if self._source_text_cache is not None:
+            return self._source_text_cache
+        text = self.category_listener.read_category_display_text()
+        if not text:
+            logger.warning(
+                f"监听无数据且未能从分类下拉取到选中项 "
+                f"({CATEGORY_MORE_TRIGGER_XPATH})，本批次跳过 Partner Groups 填写"
+            )
+            return None
+        self._source_text_cache = text
+        logger.info(f"本批次 Partner Groups 取自分类下拉选中项兜底: {text}（整批复用）")
+        return self._source_text_cache
+
+    def _fill_partner_group(self, modal, value: str) -> bool:
+        """在邀请弹窗的 Partner Groups tag 输入框中输入并选中匹配项。
+
+        填写失败仅记录日志，不阻断邀请流程。
+        """
+        tag_input = None
+        for sel in PARTNER_GROUP_INPUT_SELECTORS:
+            try:
+                ele = modal.ele(sel, timeout=0.5)
+                if ele:
+                    tag_input = ele
+                    break
+            except Exception:
+                continue
+        if not tag_input:
+            logger.debug("邀请弹窗内未找到 Partner Groups 输入框，跳过填写")
+            return False
+
+        try:
+            tag_input.click(by_js=True)
+            time.sleep(0.1)
+            tag_input.clear()
+            tag_input.input(re.sub(r"\s+", "", value))
+            time.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"Partner Groups 输入失败: {e}")
+            return False
+
+        dropdown = self._find_partner_group_dropdown(tag_input, modal)
+        if not dropdown:
+            logger.warning(f"Partner Groups 输入 '{value}' 后未出现下拉选项")
+            return False
+
+        target = self._match_partner_group_option(dropdown, value)
+        if not target:
+            logger.warning(f"Partner Groups 下拉中未找到匹配 '{value}' 的选项")
+            return False
+
+        try:
+            target.click()
+            time.sleep(0.3)
+            picked = (target.text or "").strip() or value
+            logger.info(f"已填入 Partner Groups: {picked}")
+            return True
+        except Exception as e:
+            logger.warning(f"点击 Partner Groups 选项失败: {e}")
+            return False
+
+    def _find_partner_group_dropdown(self, tag_input, modal):
+        """查找 Partner Groups 下拉浮层（独立浮层挂 body / tag-input 容器内 / 弹窗内）。"""
+        # 新版独立浮层（渲染在 body 下，不在弹窗内）
+        for sel in PARTNER_GROUP_DROPDOWN_SELECTORS:
+            try:
+                ele = self.browser.find_element(sel, timeout=1)
+                if ele:
+                    return ele
+            except Exception:
+                continue
+
+        # tag-input 容器内（下拉选项直接挂在容器下）
+        try:
+            container = tag_input.ele(
+                'xpath:ancestor::*[@data-testid="uicl-tag-input"][1]', timeout=0.3
+            )
+            if container:
+                return container
+        except Exception:
+            pass
+
+        return modal
+
+    def _match_partner_group_option(self, dropdown, value: str):
+        """在下拉中查找与目标分类匹配的选项元素（精确 > 包含）。"""
+        target_norm = _normalize_group_text(value)
+        fallback = None
+        for sel in PARTNER_GROUP_OPTION_SELECTORS:
+            try:
+                nodes = dropdown.eles(sel, timeout=0.3)
+            except Exception:
+                nodes = []
+            for node in nodes or []:
+                try:
+                    text = (node.text or "").strip()
+                    if not text:
+                        continue
+                    norm = _normalize_group_text(text)
+                    if norm == target_norm:
+                        return node
+                    if target_norm in norm or norm in target_norm:
+                        fallback = fallback or node
+                except Exception:
+                    continue
+        return fallback
 
     # ------------------------------------------------------------------
     # 卡片与按钮
@@ -288,6 +511,21 @@ class InviteCampaignService:
     # ------------------------------------------------------------------
     # 发送 + 网络监听
     # ------------------------------------------------------------------
+    def _stop_invite_listener(self) -> None:
+        """停止 invite 监听，并恢复分类监听（保留已捕获数据）。
+
+        DrissionPage 每个 tab 只有一组监听目标，_send_and_listen 启动 invite
+        监听时会覆盖分类监听；恢复后后续卡片滚动加载时仍能捕获分类。
+        """
+        try:
+            self.browser.tab.listen.stop()
+        except Exception:
+            pass
+        try:
+            self.category_listener.start(clear=False)
+        except Exception as e:
+            logger.debug(f"恢复分类监听失败: {e}")
+
     def _send_and_listen(self, modal) -> InviteCampaignResult:
         """点击 Send Invite 并通过网络监听判断结果。"""
         send_btn = None
@@ -312,7 +550,7 @@ class InviteCampaignService:
         try:
             send_btn.click()
         except Exception as e:
-            tab.listen.stop()
+            self._stop_invite_listener()
             return InviteCampaignResult(success=False, message=f"点击 Send Invite 失败: {e}")
 
         # 等待响应
@@ -376,7 +614,7 @@ class InviteCampaignService:
                 break
 
         try:
-            tab.listen.stop()
+            self._stop_invite_listener()
         except Exception:
             pass
 

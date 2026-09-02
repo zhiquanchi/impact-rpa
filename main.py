@@ -1112,6 +1112,7 @@ class InviteCampaignWorker(QThread):
         try:
             with self.output_bridge.scoped_redirect():
                 self.invite_service = InviteCampaignService(self.browser)
+                self.invite_service.start_batch()
 
                 for i in range(self.max_count):
                     if self._stop_requested:
@@ -1154,6 +1155,32 @@ class InviteCampaignWorker(QThread):
             )
         except Exception as e:
             self.task_done.emit(self.success_count, self.failed_count, False, str(e))
+        finally:
+            if self.invite_service is not None:
+                try:
+                    self.invite_service.stop_batch()
+                except Exception:
+                    pass
+
+
+class CategoryMappingWorker(QThread):
+    """后台采集 businessModels 分类映射并写入配置文件。"""
+
+    done = pyqtSignal(bool, str)
+
+    def __init__(self, browser: BrowserManager, mapping_file: str, parent=None):
+        super().__init__(parent)
+        self.browser = browser
+        self.mapping_file = mapping_file
+
+    def run(self) -> None:
+        try:
+            from domain.category_mapping_store import refresh_mapping_from_browser
+
+            count, message = refresh_mapping_from_browser(self.browser, self.mapping_file)
+            self.done.emit(count > 0, message)
+        except Exception as e:
+            self.done.emit(False, f"采集分类映射失败: {e}")
 
 
 class MainWindow(QMainWindow):
@@ -1191,6 +1218,7 @@ class MainWindow(QMainWindow):
         self._syncing_template_term_ui = False
         self._term_fetch_worker: TemplateTermFetchWorker | None = None
         self._dialog_term_options_worker: ModalTermOptionsWorker | None = None
+        self._category_mapping_worker: CategoryMappingWorker | None = None
         self._fetch_progress_dialog: QDialog | None = None
         self._active_template_name = "未配置"
         self._active_template_content = ""
@@ -1343,9 +1371,16 @@ class MainWindow(QMainWindow):
         settings_btn = QPushButton("设置")
         settings_btn.clicked.connect(self.open_settings)
 
+        self.category_mapping_btn = QPushButton("分类映射")
+        self.category_mapping_btn.setToolTip(
+            "从浏览器采集 businessModels 分类映射并写入配置文件（很少变动，手动刷新即可）"
+        )
+        self.category_mapping_btn.clicked.connect(self.refresh_category_mapping)
+
         nav_layout.addWidget(title_label)
         nav_layout.addStretch()
         nav_layout.addWidget(self.browser_status_label)
+        nav_layout.addWidget(self.category_mapping_btn)
         nav_layout.addWidget(settings_btn)
         main_layout.addLayout(nav_layout)
 
@@ -1731,6 +1766,40 @@ class MainWindow(QMainWindow):
 
     def _on_notification_summary_clicked(self, _event) -> None:
         self._open_notification_settings()
+
+    def refresh_category_mapping(self) -> None:
+        """手动采集 businessModels 分类映射并写入配置文件。"""
+        if self._category_mapping_worker and self._category_mapping_worker.isRunning():
+            return
+        if not self.browser or not self.browser.is_connected():
+            self._prompt_connect_browser(
+                message="请先连接浏览器，再采集分类映射。"
+            )
+            return
+
+        from domain.category_mapping_store import mapping_path
+
+        self.category_mapping_btn.setEnabled(False)
+        self.category_mapping_btn.setText("采集中...")
+        self.log_message("开始采集分类映射（捕获 tablestructure 接口）", "info")
+        self._category_mapping_worker = CategoryMappingWorker(
+            self.browser,
+            str(mapping_path(self.config.config_dir)),
+            self,
+        )
+        self._category_mapping_worker.done.connect(self._on_category_mapping_done)
+        self._category_mapping_worker.start()
+
+    def _on_category_mapping_done(self, ok: bool, message: str) -> None:
+        self._category_mapping_worker = None
+        self.category_mapping_btn.setEnabled(True)
+        self.category_mapping_btn.setText("分类映射")
+        if ok:
+            self.log_message(f"分类映射采集成功: {message}", "success")
+            QMessageBox.information(self, "分类映射", message)
+        else:
+            self.log_message(f"分类映射采集失败: {message}", "error")
+            QMessageBox.warning(self, "分类映射", message)
 
     def _get_terms_file_path(self) -> Path:
         return Path(self.config.template_terms_file)

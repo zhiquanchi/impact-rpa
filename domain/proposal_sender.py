@@ -9,6 +9,7 @@ from loguru import logger
 from rich.panel import Panel
 
 from core.settings_models import AppSettings, PartnerGroupsSettings
+from domain.category_mapping_store import mapping_path
 from domain.date_picker import DatePicker
 from domain.partner_category_listener import (
     PartnerCategoryListener,
@@ -64,8 +65,16 @@ class ProposalSender:
         self.date_picker = DatePicker(console)
         # 初始化 Template Term 选择器
         self.template_term_selector = TemplateTermSelector(config)
-        # 初始化分类监听器（监听列表接口，维护列表分类与 Partner 自身分类映射）
-        self.category_listener = PartnerCategoryListener(self.browser)
+        # 初始化分类监听器（监听列表接口，维护列表分类与 Partner 自身分类映射；
+        # 分类映射从配置缓存加载，GUI 可手动刷新）
+        self.category_listener = PartnerCategoryListener(
+            self.browser,
+            mapping_file=(
+                mapping_path(config.config_dir)
+                if getattr(config, "config_dir", None)
+                else None
+            ),
+        )
 
         # 订阅配置热更新（如果启用）
         try:
@@ -534,8 +543,10 @@ class ProposalSender:
         # 重置滚动进度追踪
         self._reset_scroll_progress()
 
-        # 监听列表接口，滚动加载时自动捕获当前分类（businessModels）
+        # 监听列表接口，滚动加载时自动捕获当前分类（businessModels）；
+        # 首屏数据在监听启动前已加载完成，无数据时刷新页面捕获
         self.category_listener.start()
+        self.category_listener.ensure_list_category()
 
         # 循环条件：未达到目标数量 且 未超过最大滚动次数（安全限制）
         while clicked_count < max_count and total_scrolls < effective_max_scrolls:
@@ -1452,49 +1463,24 @@ class ProposalSender:
         return sent_names
 
     def _get_selected_tab_value(self, btn) -> str | None:
-        """获取当前列表页的分类（选中的筛选 tab）。
+        """获取当前列表页的分类。
 
         优先使用列表接口监听捕获的 businessModels 映射值（随滚动加载自动更新），
-        其次读页面 DOM 的筛选 tab 栏（.iui-button-tabs.filter-tabs .iui-tab-item.selected），
-        最后回退旧版 .selected-tab 元素。
+        其次读分类显示元素（CATEGORY_DISPLAY_XPATH）文本。
+        注意不能读筛选 tab 栏 —— More 菜单里的分类选中时 tab 栏显示 "More"。
         该值同时用于匹配 Partner Group 名称，取不到会导致 partner group 环节被跳过。
         """
         # 策略1：listener 捕获的列表接口分类参数
         if self.category_listener.list_category:
             return self.category_listener.list_category
 
-        # 策略2：新版筛选 tab 栏（页面级元素，与按钮位置无关）
-        try:
-            tab_ele = self.browser.find_element(
-                "css:.iui-button-tabs.filter-tabs .iui-tab-item.selected", timeout=0.5
-            )
-            if tab_ele and (tab_ele.text or "").strip():
-                return (tab_ele.text or "").strip()
-        except Exception:
-            pass
+        # 策略2：分类显示元素文本
+        text = self.category_listener.read_category_display_text()
+        if text:
+            logger.debug(f"分类取自显示元素文本: {text}")
+            return text
 
-        # 策略3：旧版 — 按钮所在行向上找 .selected-tab
-        try:
-            parent = btn.parent()
-            for _ in range(20):
-                if parent:
-                    selected_tab_ele = self.browser.find_element(
-                        "css:.selected-tab", timeout=0.1, parent=parent
-                    )
-                    if selected_tab_ele:
-                        return selected_tab_ele.text.strip()
-                    parent = parent.parent()
-                else:
-                    break
-
-            # 备用方案
-            selected_tab_ele = self.browser.find_element(
-                "css:.selected-tab", timeout=0.5
-            )
-            if selected_tab_ele:
-                return selected_tab_ele.text.strip()
-        except Exception as e:
-            logger.error(f"获取 selected-tab 失败: {e}")
+        logger.warning("未能获取列表分类（监听与显示元素均无）")
         return None
 
     def _handle_proposal_modal(
