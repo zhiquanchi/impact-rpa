@@ -194,7 +194,7 @@ class InviteCampaignService:
         return self._read_partner_group_source_text()
 
     def _get_list_category(self) -> str | None:
-        """获取监听捕获的列表分类（businessModels 映射值），批内缓存。"""
+        """获取列表分类（URL businessModels 优先，其次监听捕获），批内缓存。"""
         if self._list_category_resolved:
             return self._list_category_cache
         self._list_category_resolved = True
@@ -205,10 +205,10 @@ class InviteCampaignService:
         except Exception as e:
             logger.debug(f"消费分类监听数据失败: {e}")
 
-        category = self.category_listener.list_category
+        category = self.category_listener.current_list_category()
         if category:
             self._list_category_cache = category.strip()
-            logger.info(f"本批次列表分类（监听）: {self._list_category_cache}")
+            logger.info(f"本批次列表分类: {self._list_category_cache}")
         return self._list_category_cache
 
     def _read_partner_group_source_text(self) -> str | None:

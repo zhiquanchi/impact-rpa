@@ -1465,14 +1465,16 @@ class ProposalSender:
     def _get_selected_tab_value(self, btn) -> str | None:
         """获取当前列表页的分类。
 
-        优先使用列表接口监听捕获的 businessModels 映射值（随滚动加载自动更新），
-        其次读分类显示元素（CATEGORY_DISPLAY_XPATH）文本。
+        优先读 URL 的 businessModels（具体分类零开销确定，All Partners 也由此识别），
+        其次使用列表接口监听捕获值（随滚动加载自动更新），
+        最后读分类显示元素（CATEGORY_DISPLAY_XPATH）文本。
         注意不能读筛选 tab 栏 —— More 菜单里的分类选中时 tab 栏显示 "More"。
         该值同时用于匹配 Partner Group 名称，取不到会导致 partner group 环节被跳过。
         """
-        # 策略1：listener 捕获的列表接口分类参数
-        if self.category_listener.list_category:
-            return self.category_listener.list_category
+        # 策略1：URL businessModels 参数，其次监听捕获值
+        category = self.category_listener.current_list_category()
+        if category:
+            return category
 
         # 策略2：分类显示元素文本
         text = self.category_listener.read_category_display_text()
@@ -1480,7 +1482,7 @@ class ProposalSender:
             logger.debug(f"分类取自显示元素文本: {text}")
             return text
 
-        logger.warning("未能获取列表分类（监听与显示元素均无）")
+        logger.warning("未能获取列表分类（URL/监听/显示元素均无）")
         return None
 
     def _handle_proposal_modal(

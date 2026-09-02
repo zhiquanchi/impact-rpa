@@ -131,6 +131,44 @@ class PartnerCategoryListener:
         """当前列表分类（最后一次捕获的 businessModels 映射值）。"""
         return self._list_category
 
+    def url_business_models(self) -> str | None:
+        """从当前页 URL（hash 优先，其次 query）提取 businessModels 原始值。
+
+        Discovery 页选中分类后 URL 形如
+        ...partner_discover.ihtml?...#businessModels=MEDIA_ARBITRAGE&...，
+        非 all 的具体分类直接由此获取，无需监听捕获。
+        """
+        try:
+            url = self.browser.tab.url or ""
+        except Exception:
+            return None
+        if not url:
+            return None
+        fragments = []
+        if "#" in url:
+            fragments.append(url.split("#", 1)[1])
+        if "?" in url:
+            fragments.append(url.split("?", 1)[1])
+        for part in fragments:
+            try:
+                bm = (parse_qs(part).get("businessModels") or [""])[0]
+            except Exception:
+                continue
+            if bm:
+                return bm
+        return None
+
+    def current_list_category(self) -> str | None:
+        """当前列表分类：URL businessModels 优先，其次监听捕获值。
+
+        URL 带具体分类（非 all）时零监听开销即可确定；
+        all / 无参数时依赖监听数据（All Partners 需逐 Partner 分类）。
+        """
+        bm = self.url_business_models()
+        if bm:
+            return self.bm_to_label(bm)
+        return self._list_category
+
     def bm_to_label(self, bm: str) -> str:
         """businessModels 原始值 -> 分类显示名。
 
@@ -173,15 +211,21 @@ class PartnerCategoryListener:
     def ensure_list_category(
         self, first_wait: float = 5.0, retry_wait: float = 3.0
     ) -> bool:
-        """确保已捕获列表分类；没有数据时刷新页面（必要时滚动触发）再等。
+        """确保已确定列表分类；需要监听数据时刷新页面（必要时滚动触发）再等。
 
-        监听只能捕获 start() 之后的请求，而首屏列表往往在任务开始前已加载完成；
-        刷新页面让列表接口重新请求即可捕获。刷新后仍未捕获时，滚动列表容器
-        触发加载更多再试一次。
+        URL 带 businessModels 具体分类（非 all）时直接可用，无需监听、不刷新页面；
+        all（All Partners 需逐 Partner 自身分类）或 URL 无参数时，
+        监听只能捕获 start() 之后的请求，而首屏列表往往在任务开始前已加载完成，
+        刷新页面让列表接口重新请求即可捕获；仍未捕获时滚动列表容器再试。
 
         Returns:
-            True=已有或已捕获列表分类；False=最终未捕获（调用方自行兜底）。
+            True=分类已可用（URL 或监听）；False=最终未捕获（调用方自行兜底）。
         """
+        bm = self.url_business_models()
+        if bm and bm != "all":
+            logger.debug(f"URL 带具体分类 businessModels={bm}，无需监听捕获")
+            return True
+
         self.drain()
         if self._list_category:
             return True
