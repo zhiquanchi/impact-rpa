@@ -9,9 +9,11 @@ from DrissionPage import Chromium
 from DrissionPage.errors import ContextLostError, ElementNotFoundError, PageDisconnectedError
 from loguru import logger
 
+from core.settings_models import AppSettings
 from exception_handler import exception_handler
 
-from core.settings_models import AppSettings
+# 列表页滚动容器（Impact 列表是内部容器滚动，滚 window 无效）
+SCROLL_CONTAINER_XPATH = '//*[@id="app"]/div/div[2]/div[2]'
 
 
 class LogSink(Protocol):
@@ -303,14 +305,33 @@ class BrowserManager:
             logger.warning(f"等待页面就绪失败: {e}")
             return False
 
+    def _get_scroll_container(self):
+        """查找列表滚动容器元素（找不到返回 None，回退 window 滚动）。"""
+        try:
+            return self.tab.ele(f"xpath:{SCROLL_CONTAINER_XPATH}", timeout=0.5)
+        except Exception:
+            return None
+
     def scroll_down(self, pixels: int = 500, incremental: bool = True) -> bool:
-        """向下滚动页面（使用 DrissionPage PageScroller）
+        """向下滚动列表（优先滚动列表容器元素，找不到容器时回退 window 滚动）
 
         Args:
             pixels: 滚动像素数
             incremental: True=渐进式滚动（推荐），False=滚动到底部
         """
         try:
+            container = self._get_scroll_container()
+            if container:
+                scroller = container.scroll
+                if incremental:
+                    scroller.down(pixels)
+                    logger.debug(f"列表容器已向下滚动 {pixels}px")
+                else:
+                    scroller.to_bottom()
+                    logger.debug("列表容器已滚动到底部")
+                return True
+
+            logger.debug("未找到列表滚动容器，回退 window 滚动")
             if incremental:
                 self.tab.scroll.down(pixels)
                 logger.debug(f"页面已向下滚动 {pixels}px")
