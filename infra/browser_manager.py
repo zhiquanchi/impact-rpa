@@ -12,9 +12,6 @@ from loguru import logger
 from core.settings_models import AppSettings
 from exception_handler import exception_handler
 
-# 列表页滚动容器（Impact 列表是内部容器滚动，滚 window 无效）
-SCROLL_CONTAINER_XPATH = '//*[@id="app"]/div/div[2]/div[2]'
-
 
 class LogSink(Protocol):
     def info(self, message: str) -> None: ...
@@ -306,38 +303,79 @@ class BrowserManager:
             return False
 
     def _get_scroll_container(self):
-        """查找列表滚动容器元素（找不到返回 None，回退 window 滚动）。"""
+        """定位页面上真实可滚动的元素（overflow 可滚且内容超出的最大者）。
+
+        已知 XPath 元素可能只是滚动容器的外层包裹（自身不可滚，滚轮落上去无效），
+        因此用 JS 探测真正的可滚元素；探测失败返回 None（滚轮落点回退 body）。
+        """
         try:
-            return self.tab.ele(f"xpath:{SCROLL_CONTAINER_XPATH}", timeout=0.5)
+            ele = self.tab.run_js(
+                """
+                let best = null, bestH = 0;
+                for (const el of document.querySelectorAll('*')) {
+                  const s = getComputedStyle(el);
+                  if (/(auto|scroll)/.test(s.overflowY) &&
+                      el.scrollHeight > el.clientHeight + 5) {
+                    const h = el.scrollHeight - el.clientHeight;
+                    if (h > bestH) { best = el; bestH = h; }
+                  }
+                }
+                return best;
+                """
+            )
+            if ele is not None and not isinstance(ele, bool):
+                return ele
+        except Exception as e:
+            logger.debug(f"探测滚动容器失败: {e}")
+        return None
+
+    def _scroll_position(self, container) -> int:
+        """读取当前滚动位置（容器 scrollTop 或 window.scrollY）。"""
+        try:
+            if container:
+                return int(container.run_js("return this.scrollTop;") or 0)
+            return int(
+                self.tab.run_js(
+                    "return window.scrollY || document.documentElement.scrollTop || 0;"
+                )
+                or 0
+            )
         except Exception:
-            return None
+            return 0
 
     def scroll_down(self, pixels: int = 500, incremental: bool = True) -> bool:
-        """向下滚动列表（优先滚动列表容器元素，找不到容器时回退 window 滚动）
+        """向下滚动列表（模拟真实鼠标滚轮事件）
+
+        通过 CDP Input.dispatchMouseEvent(type='mouseWheel') 派发滚轮事件，
+        浏览器视为真实用户操作 —— 页面只监听 wheel 事件的懒加载也能触发
+        （JS scrollTo/scrollBy 不会派发 wheel 事件）。
+        滚轮落点优先为列表滚动容器元素，找不到容器时落在 body 中心。
 
         Args:
-            pixels: 滚动像素数
-            incremental: True=渐进式滚动（推荐），False=滚动到底部
+            pixels: 滚动像素数（delta_y）
+            incremental: True=滚指定像素，False=连续滚轮直到滚不动（到底部）
         """
         try:
             container = self._get_scroll_container()
-            if container:
-                scroller = container.scroll
-                if incremental:
-                    scroller.down(pixels)
-                    logger.debug(f"列表容器已向下滚动 {pixels}px")
-                else:
-                    scroller.to_bottom()
-                    logger.debug("列表容器已滚动到底部")
+            target = container
+            if target is None:
+                target = self.tab.ele("tag:body", timeout=1)
+
+            if incremental:
+                self.tab.actions.scroll(delta_y=pixels, on_ele=target)
+                logger.debug(f"滚轮事件已派发: delta_y={pixels}")
                 return True
 
-            logger.debug("未找到列表滚动容器，回退 window 滚动")
-            if incremental:
-                self.tab.scroll.down(pixels)
-                logger.debug(f"页面已向下滚动 {pixels}px")
-            else:
-                self.tab.scroll.to_bottom()
-                logger.debug("页面已滚动到底部")
+            # 连续滚轮直到滚动位置不再变化（滚轮没有"到底"语义）
+            prev = self._scroll_position(container)
+            for _ in range(30):
+                self.tab.actions.scroll(delta_y=800, on_ele=target)
+                time.sleep(0.15)
+                cur = self._scroll_position(container)
+                if cur == prev:
+                    break
+                prev = cur
+            logger.debug(f"已滚动到底部: position={prev}")
             return True
 
         except Exception as e:
