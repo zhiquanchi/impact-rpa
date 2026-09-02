@@ -36,7 +36,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.app_info import get_app_version
 from core.config_manager import ConfigManager
+from core.daily_invite_counter import DailyInviteCounter
 from core.daily_sent_counter import DailySentCounter
 from core.settings_models import (
     AppSettings,
@@ -451,6 +453,9 @@ class SettingsDialog(QDialog):
         layout.addLayout(form_layout)
 
         btn_layout = QHBoxLayout()
+        version_label = QLabel(f"版本: v{get_app_version()}")
+        version_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        btn_layout.addWidget(version_label)
         btn_layout.addStretch()
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
@@ -1070,7 +1075,8 @@ class TaskWorker(QThread):
 class InviteCampaignWorker(QThread):
     """批量邀请到 Campaign 的后台 Worker。"""
 
-    task_done = pyqtSignal(int, bool, str)
+    invite_progress = pyqtSignal(bool)
+    task_done = pyqtSignal(int, int, bool, str)
 
     def __init__(
         self,
@@ -1091,6 +1097,8 @@ class InviteCampaignWorker(QThread):
         self.output_bridge = output_bridge
         self._stop_requested = False
         self.invite_service: InviteCampaignService | None = None
+        self.success_count = 0
+        self.failed_count = 0
 
     def request_stop(self) -> None:
         self._stop_requested = True
@@ -1098,7 +1106,6 @@ class InviteCampaignWorker(QThread):
     def run(self) -> None:
         from loguru import logger
 
-        success_count = 0
         error_message = ""
         completed_all = False
 
@@ -1123,25 +1130,30 @@ class InviteCampaignWorker(QThread):
                     )
 
                     if result.success:
-                        success_count += 1
+                        self.success_count += 1
                         logger.success(
                             f"  ✓ 邀请成功 (HTTP {result.status_code})"
                         )
                         if result.influencer_id:
                             logger.info(f"    Influencer ID: {result.influencer_id}")
                     else:
+                        self.failed_count += 1
                         logger.error(f"  ✗ 邀请失败: {result.message}")
                         if result.status_code is not None:
                             logger.error(f"    HTTP 状态码: {result.status_code}")
+
+                    self.invite_progress.emit(result.success)
 
                 else:
                     completed_all = True
 
                 self.output_bridge.flush_stdio()
 
-            self.task_done.emit(success_count, completed_all, error_message)
+            self.task_done.emit(
+                self.success_count, self.failed_count, completed_all, error_message
+            )
         except Exception as e:
-            self.task_done.emit(success_count, False, str(e))
+            self.task_done.emit(self.success_count, self.failed_count, False, str(e))
 
 
 class MainWindow(QMainWindow):
@@ -1162,6 +1174,9 @@ class MainWindow(QMainWindow):
         self.daily_sent_counter = DailySentCounter(
             Path(self.config.config_dir) / "daily_sent.json"
         )
+        self.daily_invite_counter = DailyInviteCounter(
+            Path(self.config.config_dir) / "daily_invite.json"
+        )
         self.settings_service = SettingsService(self.config)
         self.template_manager = TemplateManager(self.config)
         self.browser: BrowserManager | None = None
@@ -1179,6 +1194,8 @@ class MainWindow(QMainWindow):
         self._fetch_progress_dialog: QDialog | None = None
         self._active_template_name = "未配置"
         self._active_template_content = ""
+        # 本次运行的招募成功/失败数（任务开始时重置，结束保留展示；None=尚未运行过）
+        self._run_invite_stats: tuple[int, int] | None = None
 
         self.bridge_log.connect(self.log_message)
         self.output_bridge = OutputBridge.for_callback(
@@ -1339,6 +1356,9 @@ class MainWindow(QMainWindow):
         sent_card = self.create_compact_stat_card("今日已发送", self.stat_sent_label, "Send")
         sent_card.setMaximumWidth(132)
         stats_layout.addWidget(sent_card, 0)
+        invite_card = self.create_invite_stat_card()
+        invite_card.setMaximumWidth(150)
+        stats_layout.addWidget(invite_card, 0)
         stats_layout.addWidget(self.create_active_template_card(), 3)
         stats_layout.addWidget(self.create_template_term_card(), 3)
         stats_layout.addWidget(self.create_notification_card(), 2)
@@ -1502,6 +1522,64 @@ class MainWindow(QMainWindow):
         layout.addWidget(icon_label)
         layout.addLayout(text_layout)
         return card
+
+    def create_invite_stat_card(self) -> QFrame:
+        """今日招募统计卡片，区分显示成功（绿）/失败（红）。"""
+        card = QFrame()
+        card.setObjectName("statCardCompact")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        icon_label = QLabel("Inv")
+        icon_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        icon_label.setFixedWidth(32)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        title_label = QLabel("今日招募")
+        title_label.setObjectName("statTitleCompact")
+        self.stat_invite_label = QLabel()
+        self.stat_invite_label.setObjectName("statValueCompact")
+        text_layout.addWidget(title_label)
+        text_layout.addWidget(self.stat_invite_label)
+
+        layout.addWidget(icon_label)
+        layout.addLayout(text_layout)
+        self.stat_invite_label.setToolTip(
+            "今日累计（跨多次任务）成功 / 失败；小字为最近一次任务的运行结果"
+        )
+        self._refresh_invite_stats()
+        return card
+
+    def _refresh_invite_stats(self) -> None:
+        success, failed = self.daily_invite_counter.get_counts()
+        today_line = (
+            f"<span style='color:#16a34a;'>✓ {success}</span>"
+            f"<span style='color:#94a3b8;'> / </span>"
+            f"<span style='color:#dc2626;'>✗ {failed}</span>"
+        )
+        if self._run_invite_stats is not None:
+            run_success, run_failed = self._run_invite_stats
+            today_line += (
+                f"<br><span style='font-size:11px; color:#64748b;'>"
+                f"本次 <span style='color:#16a34a;'>✓ {run_success}</span>"
+                f" / <span style='color:#dc2626;'>✗ {run_failed}</span>"
+                f"</span>"
+            )
+        self.stat_invite_label.setText(today_line)
+
+    def _on_invite_progress(self, success: bool) -> None:
+        """邀请任务每完成一条时的实时统计（跨线程信号，GUI 线程内累加持久化）。"""
+        run_success, run_failed = self._run_invite_stats or (0, 0)
+        if success:
+            self.daily_invite_counter.add(success=1)
+            self._run_invite_stats = (run_success + 1, run_failed)
+        else:
+            self.daily_invite_counter.add(failed=1)
+            self._run_invite_stats = (run_success, run_failed + 1)
+        self._refresh_invite_stats()
 
     def create_active_template_card(self) -> QFrame:
         card = QFrame()
@@ -1835,6 +1913,7 @@ class MainWindow(QMainWindow):
         self.refresh_templates()
         self.refresh_settings_inputs()
         self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
+        self._refresh_invite_stats()
         self._lock_interface()
         self.log_message("系统启动，真实配置已加载", "info")
 
@@ -1905,6 +1984,7 @@ class MainWindow(QMainWindow):
 
     def refresh_runtime_state(self) -> None:
         self.stat_sent_label.setText(str(self.daily_sent_counter.get_count()))
+        self._refresh_invite_stats()
         self.refresh_templates()
         self.refresh_settings_inputs()
         self._start_browser_probe()
@@ -2322,6 +2402,10 @@ class MainWindow(QMainWindow):
             "highlight",
         )
 
+        # 重置本次运行统计并开始任务
+        self._run_invite_stats = (0, 0)
+        self._refresh_invite_stats()
+
         self.worker = InviteCampaignWorker(
             browser=browser,
             campaign_name=campaign_name,
@@ -2331,6 +2415,7 @@ class MainWindow(QMainWindow):
             output_bridge=self.output_bridge,
             parent=self,
         )
+        self.worker.invite_progress.connect(self._on_invite_progress)  # type: ignore[attr-defined]
         self.worker.task_done.connect(self.handle_invite_task_done)  # type: ignore[attr-defined]
         self.worker.start()
 
@@ -2393,7 +2478,11 @@ class MainWindow(QMainWindow):
         self.worker = None
 
     def handle_invite_task_done(
-        self, success_count: int, completed_all: bool, error_message: str
+        self,
+        success_count: int,
+        failed_count: int,
+        completed_all: bool,
+        error_message: str,
     ) -> None:
         if (
             self.worker
@@ -2411,11 +2500,13 @@ class MainWindow(QMainWindow):
             self.log_message(f"任务执行失败: {error_message}", "error")
         elif completed_all:
             self.log_message(
-                f"任务完成，共邀请 {success_count} 个达人到 Campaign", "success"
+                f"任务完成，成功邀请 {success_count} 个，失败 {failed_count} 个",
+                "success",
             )
         else:
             self.log_message(
-                f"任务结束，当前批次共邀请 {success_count} 个达人到 Campaign", "warn"
+                f"任务结束，本批次成功邀请 {success_count} 个，失败 {failed_count} 个",
+                "warn",
             )
 
         self.update_browser_status(self.detect_browser_connected())
