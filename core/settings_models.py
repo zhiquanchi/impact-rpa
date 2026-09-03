@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -69,6 +69,8 @@ class AppSettings(BaseModel):
     modal_wait: float = Field(default=20.0, gt=0)
     dry_run: bool = False
     template_term: str = ""
+    # 列表页发送方式：card=卡片页面直接点按钮，strip=点卡片进侧边栏发送
+    list_send_mode: Literal["card", "strip"] = "strip"
     input_partner_groups_tag: bool = True
     partner_groups_debug_logging: bool = False
     partner_groups_batch_create_done: bool = False

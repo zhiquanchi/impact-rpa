@@ -1463,9 +1463,11 @@ class MainWindow(QMainWindow):
         self.list_send_mode_group = QButtonGroup(self)
         self.list_send_mode_card = QRadioButton("卡片页面发送（卡片上直接有 Send Proposal 按钮）")
         self.list_send_mode_strip = QRadioButton("条状发送（点卡片 → 侧边栏 → Send Proposal）")
-        self.list_send_mode_strip.setChecked(True)
         self.list_send_mode_group.addButton(self.list_send_mode_card)
         self.list_send_mode_group.addButton(self.list_send_mode_strip)
+        self._restore_send_mode()
+        self.list_send_mode_card.toggled.connect(self._on_send_mode_changed)
+        self.list_send_mode_strip.toggled.connect(self._on_send_mode_changed)
         mode_widget = QWidget()
         mode_layout = QHBoxLayout(mode_widget)
         mode_layout.setContentsMargins(0, 0, 0, 0)
@@ -1878,6 +1880,24 @@ class MainWindow(QMainWindow):
             self.log_message(f"已更新 Template Term: {term}", "info")
         else:
             self.log_message("已清空 Template Term", "warn")
+
+    def _restore_send_mode(self) -> None:
+        """启动时恢复上次使用的列表页发送方式。"""
+        mode = self.settings_service.get_snapshot().list_send_mode
+        if mode == "card":
+            self.list_send_mode_card.setChecked(True)
+        else:
+            self.list_send_mode_strip.setChecked(True)
+
+    def _on_send_mode_changed(self, checked: bool) -> None:
+        """切换发送方式即保存（toggled 两个按钮各触发一次，只处理选中侧）。"""
+        if not checked:
+            return
+        mode = "card" if self.list_send_mode_card.isChecked() else "strip"
+        settings = self.settings_service.get_snapshot()
+        if settings.list_send_mode == mode:
+            return
+        self.settings_service.save(settings.model_copy(update={"list_send_mode": mode}))
 
     def _is_browser_on_login_page(self) -> bool:
         tab = getattr(self.browser, "tab", None) if self.browser else None
