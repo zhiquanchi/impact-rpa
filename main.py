@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.app_info import get_app_version
+from core.app_info import get_app_version, get_commit_info
 from core.config_manager import ConfigManager
 from core.daily_invite_counter import DailyInviteCounter
 from core.daily_sent_counter import DailySentCounter
@@ -452,10 +452,19 @@ class SettingsDialog(QDialog):
         form_layout.addRow("", self.partner_groups_check)
         layout.addLayout(form_layout)
 
+        # 版本信息块：整行宽度放按钮区上方，避免长提交信息被截断
+        commit_info = get_commit_info()
+        version_label = QLabel(f"版本: {get_app_version()}")
+        version_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        layout.addWidget(version_label)
+        if commit_info:
+            commit_label = QLabel(commit_info)
+            commit_label.setStyleSheet("color: #b0bcc9; font-size: 10px;")
+            commit_label.setWordWrap(True)
+            commit_label.setToolTip(commit_info)
+            layout.addWidget(commit_label)
+
         btn_layout = QHBoxLayout()
-        version_label = QLabel(f"版本: v{get_app_version()}")
-        version_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        btn_layout.addWidget(version_label)
         btn_layout.addStretch()
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
@@ -473,10 +482,10 @@ class SettingsDialog(QDialog):
     def _apply_dry_run_visibility(self) -> None:
         if self._dry_run_visible:
             self.dry_run_check.show()
-            self.setFixedSize(420, 280)
+            self.setFixedSize(420, 310)
         else:
             self.dry_run_check.hide()
-            self.setFixedSize(420, 250)
+            self.setFixedSize(420, 290)
 
     def _on_dry_run_check_changed(self, _state: int) -> None:
         if self.dry_run_check.isChecked():
